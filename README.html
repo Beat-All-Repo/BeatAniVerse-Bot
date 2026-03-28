@@ -1,0 +1,3236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BeatAniVerse Bot — README</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Oswald:wght@300;400;600;700&family=Share+Tech+Mono&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --red: #E50914;
+    --red-dark: #8B0000;
+    --red-glow: rgba(229,9,20,0.6);
+    --red-dim: rgba(229,9,20,0.15);
+    --black: #0a0a0a;
+    --black-2: #111111;
+    --black-3: #1a1a1a;
+    --black-4: #222222;
+    --gray: #333333;
+    --gray-light: #555555;
+    --text: #cccccc;
+    --text-bright: #eeeeee;
+    --text-dim: #888888;
+    --green: #00ff41;
+    --amber: #ffb000;
+    --white: #f0f0f0;
+    --border: rgba(229,9,20,0.3);
+    --border-dim: rgba(255,255,255,0.08);
+    --font-display: 'Bebas Neue', cursive;
+    --font-ui: 'Oswald', sans-serif;
+    --font-mono: 'Share Tech Mono', monospace;
+    --font-body: 'Crimson Pro', Georgia, serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--black);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 17px;
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ═══ SCANLINE OVERLAY ═══ */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ═══ NOISE TEXTURE ═══ */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9998;
+    opacity: 0.4;
+  }
+
+  /* ═══ SCROLLBAR ═══ */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: var(--black); }
+  ::-webkit-scrollbar-thumb { background: var(--red); border-radius: 3px; }
+
+  /* ═══ SELECTIONS ═══ */
+  ::selection { background: var(--red); color: white; }
+
+  /* ═══ LINKS ═══ */
+  a { color: var(--red); text-decoration: none; transition: all 0.2s; }
+  a:hover { color: white; text-shadow: 0 0 12px var(--red-glow); }
+
+  /* ═══ HERO ═══ */
+  .hero {
+    position: relative;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 60px 20px;
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 0%, rgba(229,9,20,0.18) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 40% at 50% 100%, rgba(139,0,0,0.12) 0%, transparent 60%),
+      var(--black);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Ccircle cx='30' cy='30' r='1' fill='rgba(229,9,20,0.08)'/%3E%3C/svg%3E");
+    animation: drift 30s linear infinite;
+  }
+
+  @keyframes drift {
+    from { background-position: 0 0; }
+    to { background-position: 60px 60px; }
+  }
+
+  /* Biohazard watermark */
+  .hero::after {
+    content: '☣';
+    position: absolute;
+    font-size: 600px;
+    color: rgba(229,9,20,0.03);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    animation: slowSpin 60s linear infinite;
+  }
+
+  @keyframes slowSpin {
+    from { transform: translate(-50%, -50%) rotate(0deg); }
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+  }
+
+  .hero-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 4px;
+    color: var(--red);
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    border: 1px solid var(--border);
+    padding: 6px 18px;
+    display: inline-block;
+    background: var(--red-dim);
+    animation: pulse-border 3s ease-in-out infinite;
+    position: relative;
+    z-index: 1;
+  }
+
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: 0 0 0 0 transparent, inset 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 20px var(--red-glow), inset 0 0 10px rgba(229,9,20,0.1); }
+  }
+
+  .hero-title {
+    font-family: var(--font-display);
+    font-size: clamp(64px, 12vw, 160px);
+    letter-spacing: 4px;
+    color: var(--white);
+    line-height: 0.9;
+    position: relative;
+    z-index: 1;
+    animation: glitch 8s infinite;
+  }
+
+  .hero-title .line-red {
+    display: block;
+    color: var(--red);
+    text-shadow:
+      0 0 30px var(--red-glow),
+      0 0 60px rgba(229,9,20,0.3),
+      2px 2px 0 rgba(139,0,0,0.8);
+    animation: glitch-red 8s infinite 0.5s;
+  }
+
+  @keyframes glitch {
+    0%, 92%, 100% { clip-path: none; transform: none; }
+    93% { clip-path: polygon(0 10%, 100% 10%, 100% 40%, 0 40%); transform: translateX(-4px); }
+    94% { clip-path: polygon(0 60%, 100% 60%, 100% 75%, 0 75%); transform: translateX(4px); }
+    95% { clip-path: none; transform: translateX(-2px); }
+    96% { clip-path: none; transform: none; }
+  }
+
+  @keyframes glitch-red {
+    0%, 94%, 100% { text-shadow: 0 0 30px var(--red-glow), 0 0 60px rgba(229,9,20,0.3), 2px 2px 0 rgba(139,0,0,0.8); transform: none; }
+    95% { text-shadow: -4px 0 var(--red-dark), 4px 0 #ff4444; transform: translateX(-2px); }
+    96% { text-shadow: 4px 0 var(--red-dark), -4px 0 #ff4444; transform: translateX(2px); }
+    97% { text-shadow: 0 0 30px var(--red-glow); transform: none; }
+  }
+
+  .hero-subtitle {
+    font-family: var(--font-ui);
+    font-size: clamp(14px, 2.5vw, 22px);
+    letter-spacing: 8px;
+    font-weight: 300;
+    color: var(--text-dim);
+    margin: 16px 0 40px;
+    text-transform: uppercase;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero-subtitle span { color: var(--red); }
+
+  /* Badges row */
+  .badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    position: relative;
+    z-index: 1;
+    margin-bottom: 16px;
+  }
+
+  .badge-row img { height: 28px; filter: drop-shadow(0 0 8px var(--red-glow)); }
+
+  /* NETFLIX strip */
+  .netflix-strip {
+    position: relative;
+    width: 100%;
+    background: var(--red);
+    color: white;
+    font-family: var(--font-display);
+    font-size: 14px;
+    letter-spacing: 6px;
+    text-align: center;
+    padding: 10px;
+    margin: 40px 0 0;
+    text-transform: uppercase;
+    overflow: hidden;
+  }
+
+  .netflix-strip::before, .netflix-strip::after {
+    content: '⬥ BEAT ANI VERSE ⬥ COMPLETE BOT SYSTEM ⬥ TELEGRAM ⬥ PRODUCTION READY ⬥ 77 FEATURES ⬥ BEAT ANI VERSE ⬥ COMPLETE BOT SYSTEM ⬥ TELEGRAM ⬥ PRODUCTION READY ⬥ 77 FEATURES ⬥ ';
+    position: absolute;
+    white-space: nowrap;
+    font-size: 12px;
+    letter-spacing: 4px;
+    opacity: 0.7;
+    animation: marquee 30s linear infinite;
+  }
+
+  .netflix-strip::after { animation-delay: -15s; }
+
+  @keyframes marquee {
+    from { transform: translateX(100vw); }
+    to { transform: translateX(-100%); }
+  }
+
+  /* ═══ SECTION WRAPPER ═══ */
+  .section {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 60px 24px;
+    position: relative;
+  }
+
+  /* ═══ SECTION HEADER ═══ */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+
+  .section-num {
+    font-family: var(--font-display);
+    font-size: 80px;
+    color: rgba(229,9,20,0.12);
+    line-height: 1;
+    user-select: none;
+    position: absolute;
+    left: 24px;
+    top: 50px;
+  }
+
+  .section-title {
+    font-family: var(--font-display);
+    font-size: clamp(28px, 4vw, 52px);
+    color: var(--white);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    position: relative;
+  }
+
+  .section-title::after {
+    content: '';
+    display: block;
+    width: 60%;
+    height: 3px;
+    background: linear-gradient(90deg, var(--red), transparent);
+    margin-top: 6px;
+  }
+
+  .section-icon {
+    font-size: 2em;
+    filter: drop-shadow(0 0 12px var(--red-glow));
+  }
+
+  /* ═══ DIVIDER ═══ */
+  hr, .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 60px 0;
+    position: relative;
+  }
+
+  hr::before, .divider::before {
+    content: '☣';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--black);
+    color: var(--red);
+    padding: 0 12px;
+    font-size: 18px;
+    opacity: 0.5;
+  }
+
+  /* ═══ 3D FEATURE CARDS ═══ */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 24px;
+    perspective: 1000px;
+    margin: 40px 0;
+  }
+
+  .feature-card {
+    background: var(--black-2);
+    border: 1px solid var(--border);
+    padding: 32px;
+    position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.4s ease, box-shadow 0.4s ease;
+    cursor: default;
+    overflow: hidden;
+  }
+
+  .feature-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(229,9,20,0.08) 0%, transparent 60%);
+    transition: opacity 0.4s;
+  }
+
+  .feature-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--red), transparent);
+    opacity: 0;
+    transition: opacity 0.4s;
+  }
+
+  .feature-card:hover {
+    transform: translateY(-8px) rotateX(4deg) rotateY(-2deg);
+    box-shadow:
+      0 20px 60px rgba(0,0,0,0.6),
+      0 0 30px var(--red-glow),
+      inset 0 1px 0 rgba(229,9,20,0.4);
+    border-color: var(--red);
+  }
+
+  .feature-card:hover::after { opacity: 1; }
+
+  .feature-card-icon {
+    font-size: 42px;
+    margin-bottom: 16px;
+    display: block;
+    filter: drop-shadow(0 0 14px var(--red-glow));
+  }
+
+  .feature-card h3 {
+    font-family: var(--font-display);
+    font-size: 28px;
+    color: var(--white);
+    letter-spacing: 2px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+  }
+
+  .feature-card ul {
+    list-style: none;
+    space-y: 8px;
+  }
+
+  .feature-card ul li {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text);
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .feature-card ul li::before {
+    content: '▶';
+    color: var(--red);
+    font-size: 8px;
+    flex-shrink: 0;
+  }
+
+  /* ═══ CODE BLOCKS ═══ */
+  pre, code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  pre {
+    background: var(--black-3);
+    border: 1px solid var(--border-dim);
+    border-left: 3px solid var(--red);
+    padding: 20px 24px;
+    overflow-x: auto;
+    line-height: 1.8;
+    color: var(--green);
+    position: relative;
+    margin: 16px 0;
+  }
+
+  pre::before {
+    content: 'SYSTEM';
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-size: 9px;
+    letter-spacing: 3px;
+    color: var(--red);
+    opacity: 0.6;
+  }
+
+  code:not(pre code) {
+    background: rgba(229,9,20,0.1);
+    color: var(--red);
+    padding: 2px 6px;
+    border: 1px solid rgba(229,9,20,0.2);
+    font-size: 12px;
+  }
+
+  /* ═══ TABLES ═══ */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 20px 0;
+    border: 1px solid var(--border);
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 300;
+  }
+
+  thead {
+    background: linear-gradient(90deg, var(--red-dark), var(--red), var(--red-dark));
+    color: white;
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  thead th { padding: 14px 16px; text-align: left; }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border-dim);
+    transition: background 0.2s;
+  }
+
+  tbody tr:hover { background: rgba(229,9,20,0.06); }
+
+  tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+  tbody tr:nth-child(even):hover { background: rgba(229,9,20,0.06); }
+
+  tbody td { padding: 12px 16px; color: var(--text); vertical-align: top; }
+  tbody td strong { color: var(--white); }
+  tbody td code { font-size: 12px; }
+
+  /* ═══ DETAILS / ACCORDION ═══ */
+  details {
+    border: 1px solid var(--border-dim);
+    margin: 12px 0;
+    background: var(--black-2);
+    transition: border-color 0.3s;
+    position: relative;
+  }
+
+  details[open] {
+    border-color: var(--border);
+    box-shadow: 0 0 20px rgba(229,9,20,0.08);
+  }
+
+  details[open]::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--red), transparent);
+  }
+
+  summary {
+    font-family: var(--font-ui);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--white);
+    padding: 16px 20px;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    user-select: none;
+    transition: color 0.2s;
+  }
+
+  summary::-webkit-details-marker { display: none; }
+
+  summary::before {
+    content: '▶';
+    color: var(--red);
+    font-size: 10px;
+    transition: transform 0.3s;
+    flex-shrink: 0;
+  }
+
+  details[open] summary::before { transform: rotate(90deg); }
+
+  summary:hover { color: var(--red); }
+
+  .details-content {
+    padding: 0 20px 20px;
+    border-top: 1px solid var(--border-dim);
+  }
+
+  .details-content p {
+    margin: 12px 0;
+    color: var(--text);
+  }
+
+  /* ═══ ARCHITECTURE TREE ═══ */
+  .arch-tree {
+    background: var(--black-3);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--red);
+    padding: 24px 28px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 2;
+    color: var(--green);
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .arch-tree .dir { color: var(--amber); }
+  .arch-tree .file { color: var(--text); }
+  .arch-tree .comment { color: var(--gray-light); }
+
+  /* ═══ PERMISSION MATRIX ═══ */
+  .check-yes { color: var(--green); }
+  .check-no { color: var(--red); }
+  .check-na { color: var(--gray-light); }
+
+  /* ═══ STAT CARDS ═══ */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 24px 0;
+  }
+
+  .stat-card {
+    background: var(--black-3);
+    border: 1px solid var(--border);
+    padding: 24px 20px;
+    text-align: center;
+    position: relative;
+    transition: transform 0.3s, box-shadow 0.3s;
+    transform-style: preserve-3d;
+  }
+
+  .stat-card:hover {
+    transform: translateY(-6px) rotateX(3deg);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 20px var(--red-glow);
+    border-color: var(--red);
+  }
+
+  .stat-card-number {
+    font-family: var(--font-display);
+    font-size: 44px;
+    color: var(--red);
+    line-height: 1;
+    text-shadow: 0 0 20px var(--red-glow);
+  }
+
+  .stat-card-label {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-top: 8px;
+  }
+
+  /* ═══ TEAM CARDS ═══ */
+  .team-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 20px;
+    margin: 24px 0;
+  }
+
+  .team-card {
+    background: var(--black-2);
+    border: 1px solid var(--border-dim);
+    padding: 28px 16px;
+    text-align: center;
+    transition: all 0.3s;
+    transform-style: preserve-3d;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .team-card::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--red);
+    transform: scaleX(0);
+    transition: transform 0.3s;
+  }
+
+  .team-card:hover {
+    transform: translateY(-8px) rotateY(5deg);
+    border-color: var(--border);
+    box-shadow: 0 16px 50px rgba(0,0,0,0.5), 0 0 20px var(--red-glow);
+  }
+
+  .team-card:hover::before { transform: scaleX(1); }
+
+  .team-card img { width: 64px; height: 64px; filter: drop-shadow(0 0 10px var(--red-glow)) grayscale(0.5); }
+  .team-card h4 { font-family: var(--font-ui); font-size: 14px; font-weight: 600; color: var(--white); margin: 12px 0 6px; text-transform: uppercase; letter-spacing: 1px; }
+  .team-card a { font-size: 13px; color: var(--red); }
+  .team-card small { display: block; font-family: var(--font-ui); font-size: 11px; color: var(--text-dim); margin-top: 4px; letter-spacing: 1px; }
+
+  /* ═══ ALERT / WARNING BOXES ═══ */
+  .alert {
+    border: 1px solid;
+    padding: 16px 20px;
+    margin: 16px 0;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+  }
+
+  .alert-red { border-color: var(--red); background: rgba(229,9,20,0.08); color: #ff8888; }
+  .alert-amber { border-color: var(--amber); background: rgba(255,176,0,0.08); color: #ffcc44; }
+  .alert-green { border-color: var(--green); background: rgba(0,255,65,0.06); color: #44ff88; }
+
+  .alert-icon { font-size: 18px; flex-shrink: 0; }
+
+  /* ═══ CHANNEL SUPPORT TABLE ═══ */
+  .support-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin: 24px 0;
+  }
+
+  .support-card {
+    background: var(--black-3);
+    border: 1px solid var(--border-dim);
+    padding: 24px 20px;
+    text-align: center;
+    transition: all 0.3s;
+    transform-style: preserve-3d;
+  }
+
+  .support-card:hover {
+    transform: translateY(-6px) rotateX(4deg);
+    border-color: var(--red);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4), 0 0 20px var(--red-glow);
+  }
+
+  .support-card img { width: 52px; filter: drop-shadow(0 0 8px var(--red-glow)); margin-bottom: 12px; }
+  .support-card h4 { font-family: var(--font-ui); font-size: 15px; font-weight: 600; color: var(--white); margin-bottom: 4px; }
+  .support-card a { font-size: 13px; color: var(--red); }
+  .support-card small { display: block; font-family: var(--font-ui); font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+
+  /* ═══ TIER BADGES ═══ */
+  .tier-free   { color: var(--text-dim); }
+  .tier-bronze { color: #cd7f32; }
+  .tier-silver { color: #c0c0c0; }
+  .tier-gold   { color: #ffd700; }
+
+  /* ═══ DEPLOY STEPS ═══ */
+  .steps-list { counter-reset: steps; list-style: none; margin: 16px 0; }
+  .steps-list li {
+    counter-increment: steps;
+    padding: 16px 16px 16px 56px;
+    margin: 8px 0;
+    background: var(--black-3);
+    border: 1px solid var(--border-dim);
+    position: relative;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    transition: border-color 0.2s;
+  }
+
+  .steps-list li:hover { border-color: var(--border); }
+
+  .steps-list li::before {
+    content: counter(steps, decimal-leading-zero);
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-display);
+    font-size: 28px;
+    color: var(--red);
+    line-height: 1;
+  }
+
+  /* ═══ CHECKLIST ═══ */
+  .checklist { list-style: none; margin: 12px 0; }
+  .checklist li {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    padding: 6px 0;
+    color: var(--text);
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .checklist li::before { content: '✅'; flex-shrink: 0; font-size: 13px; }
+  .checklist li.optional::before { content: '⭕'; }
+
+  /* ═══ MILESTONE TIMELINE ═══ */
+  .timeline { list-style: none; margin: 16px 0; position: relative; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 20px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--red), transparent);
+  }
+
+  .timeline li {
+    padding: 12px 16px 12px 52px;
+    position: relative;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text);
+    margin: 4px 0;
+  }
+
+  .timeline li::before {
+    content: '';
+    position: absolute;
+    left: 14px;
+    top: 18px;
+    width: 14px;
+    height: 14px;
+    background: var(--red);
+    border: 2px solid var(--black);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--red-glow);
+  }
+
+  .timeline li strong {
+    display: block;
+    font-family: var(--font-display);
+    font-size: 18px;
+    color: var(--white);
+    letter-spacing: 1px;
+  }
+
+  /* ═══ ACHIEVEMENTS ═══ */
+  .achieve-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin: 16px 0; }
+  .achieve-list li {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text);
+    padding: 10px 16px;
+    background: var(--black-3);
+    border: 1px solid var(--border-dim);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .achieve-list li::before { content: '✅'; flex-shrink: 0; }
+
+  /* ═══ HEADING STYLES ═══ */
+  h2 { font-family: var(--font-display); font-size: clamp(22px, 3vw, 40px); color: var(--white); letter-spacing: 3px; text-transform: uppercase; margin: 40px 0 20px; }
+  h3 { font-family: var(--font-display); font-size: clamp(18px, 2.5vw, 28px); color: var(--white); letter-spacing: 2px; text-transform: uppercase; margin: 24px 0 14px; }
+  h3 .red { color: var(--red); }
+  h4 { font-family: var(--font-ui); font-size: 16px; font-weight: 600; color: var(--white); letter-spacing: 1px; margin: 16px 0 10px; text-transform: uppercase; }
+
+  p { margin: 10px 0; }
+
+  ul:not(.checklist):not(.timeline):not(.achieve-list):not(.feature-card ul):not(.steps-list) {
+    list-style: none;
+    margin: 10px 0 10px 0;
+  }
+
+  ul:not(.checklist):not(.timeline):not(.achieve-list):not(.feature-card ul):not(.steps-list) li {
+    font-family: var(--font-ui);
+    font-size: 14px;
+    font-weight: 300;
+    color: var(--text);
+    padding: 4px 0 4px 16px;
+    position: relative;
+  }
+
+  ul:not(.checklist):not(.timeline):not(.achieve-list):not(.feature-card ul):not(.steps-list) li::before {
+    content: '▸';
+    color: var(--red);
+    position: absolute;
+    left: 0;
+  }
+
+  strong { color: var(--white); font-weight: 600; }
+
+  /* ═══ ATTRIBUTION BOX ═══ */
+  .attribution-box {
+    background: var(--black-3);
+    border: 1px solid var(--border);
+    padding: 20px 24px;
+    margin: 16px 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .attribution-box::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--red);
+  }
+
+  /* ═══ FOOTER ═══ */
+  footer {
+    background: var(--black-2);
+    border-top: 1px solid var(--border);
+    text-align: center;
+    padding: 60px 24px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  footer::before {
+    content: '☣ BEATANIME ☣';
+    position: absolute;
+    font-family: var(--font-display);
+    font-size: 120px;
+    color: rgba(229,9,20,0.04);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .footer-logo {
+    font-family: var(--font-display);
+    font-size: 52px;
+    color: var(--red);
+    text-shadow: 0 0 30px var(--red-glow);
+    letter-spacing: 6px;
+    margin-bottom: 12px;
+  }
+
+  .footer-sub {
+    font-family: var(--font-ui);
+    font-size: 12px;
+    letter-spacing: 4px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+
+  .footer-badges {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 20px 0;
+  }
+
+  .footer-badges img { height: 26px; filter: drop-shadow(0 0 6px var(--red-glow)); }
+
+  .footer-copy {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 20px;
+    letter-spacing: 1px;
+  }
+
+  .footer-copy .red { color: var(--red); }
+
+  /* ═══ NAV ═══ */
+  .toc {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(10,10,10,0.95);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .toc::-webkit-scrollbar { display: none; }
+
+  .toc-inner {
+    display: flex;
+    gap: 0;
+    min-width: max-content;
+    align-items: center;
+  }
+
+  .toc a {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    letter-spacing: 2px;
+    font-weight: 600;
+    color: var(--text-dim);
+    padding: 14px 16px;
+    text-transform: uppercase;
+    display: block;
+    transition: all 0.2s;
+    white-space: nowrap;
+    position: relative;
+  }
+
+  .toc a::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 16px;
+    right: 16px;
+    height: 2px;
+    background: var(--red);
+    transform: scaleX(0);
+    transition: transform 0.2s;
+  }
+
+  .toc a:hover { color: var(--white); text-shadow: none; }
+  .toc a:hover::after { transform: scaleX(1); }
+
+  .toc-brand {
+    font-family: var(--font-display);
+    font-size: 20px;
+    color: var(--red);
+    letter-spacing: 4px;
+    padding: 0 20px 0 4px;
+    border-right: 1px solid var(--border);
+    margin-right: 4px;
+    flex-shrink: 0;
+    text-shadow: 0 0 12px var(--red-glow);
+  }
+
+  /* ═══ DATA FLOW VISUAL ═══ */
+  .dataflow {
+    background: var(--black-3);
+    border: 1px solid var(--border-dim);
+    padding: 24px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 2.2;
+    color: var(--text);
+    margin: 16px 0;
+  }
+
+  .dataflow .node {
+    display: inline-block;
+    background: var(--black-4);
+    border: 1px solid var(--border);
+    padding: 6px 16px;
+    color: var(--white);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  .dataflow .db-node { border-color: var(--red); color: var(--red); }
+  .dataflow .arrow { color: var(--red); display: block; }
+
+  /* Emphasis spans */
+  .highlight { color: var(--red); font-weight: 600; }
+  .mono { font-family: var(--font-mono); font-size: 0.9em; color: var(--green); }
+
+  /* Section separator with biohazard */
+  .sep {
+    text-align: center;
+    font-size: 20px;
+    color: rgba(229,9,20,0.3);
+    margin: 48px 0;
+    letter-spacing: 12px;
+  }
+
+  /* 3D perspective wrapper for cards */
+  .perspective-wrap { perspective: 1200px; }
+
+  /* Overview box */
+  .overview-box {
+    background: linear-gradient(135deg, var(--black-2) 0%, rgba(139,0,0,0.08) 100%);
+    border: 1px solid var(--border);
+    padding: 32px 36px;
+    margin: 24px 0;
+    position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.4s;
+  }
+
+  .overview-box::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--red), transparent);
+  }
+
+  .overview-box::after {
+    content: '⚡';
+    position: absolute;
+    right: 24px;
+    top: 24px;
+    font-size: 32px;
+    opacity: 0.15;
+  }
+
+  .overview-box p { font-size: 18px; line-height: 1.8; color: var(--text-bright); }
+
+  /* 3D hover on overview */
+  .overview-box:hover { transform: perspective(600px) rotateX(2deg); }
+
+  /* Core systems */
+  .core-systems-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+    margin: 24px 0;
+  }
+
+  .core-system {
+    background: var(--black-2);
+    border: 1px solid var(--border-dim);
+    padding: 24px;
+    position: relative;
+    transform-style: preserve-3d;
+    transition: all 0.3s;
+  }
+
+  .core-system:hover {
+    transform: translateY(-6px) rotateY(3deg);
+    border-color: var(--border);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4), 0 0 20px var(--red-glow);
+  }
+
+  .core-system h4 { color: var(--red); font-family: var(--font-display); font-size: 22px; letter-spacing: 2px; }
+  .core-system .sub { font-family: var(--font-ui); font-size: 11px; color: var(--text-dim); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; }
+  .core-system ul li::before { content: '✦'; color: var(--red); position: absolute; left: 0; }
+
+  /* Permission dots */
+  .perm-yes::before { content: '✅'; }
+  .perm-no::before { content: '❌'; }
+  .perm-dash::before { content: '—'; color: var(--gray-light); }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .feature-grid { grid-template-columns: 1fr; }
+    .team-grid { grid-template-columns: repeat(2, 1fr); }
+    .toc { padding: 0 12px; }
+    .section { padding: 40px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║              HERO SECTION                ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<header class="hero">
+  <div class="hero-badge">☣ &nbsp; CLASSIFIED — PRODUCTION RELEASE v2.0.0 &nbsp; ☣</div>
+  <h1 class="hero-title">
+    BEAT
+    <span class="line-red">ANI VERSE</span>
+    BOT
+  </h1>
+  <p class="hero-subtitle">
+    <span>LINK PROVIDER</span> · POSTER ENGINE · <span>GROUP MANAGEMENT</span>
+  </p>
+
+  <!-- Primary Badges -->
+  <div class="badge-row">
+    <a href="https://t.me/BeatAnime"><img src="https://img.shields.io/badge/Telegram-Channel-blue?style=for-the-badge&logo=telegram" alt="Telegram Channel"></a>
+    <a href="https://t.me/Beat_Anime_Discussion"><img src="https://img.shields.io/badge/Telegram-Discussion-blue?style=for-the-badge&logo=telegram" alt="Discussion Group"></a>
+    <a href="https://render.com"><img src="https://img.shields.io/badge/Deploy-Render-46E3B7?style=for-the-badge&logo=render" alt="Deploy on Render"></a>
+  </div>
+
+  <!-- Tech Badges -->
+  <div class="badge-row">
+    <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+    <img src="https://img.shields.io/badge/PostgreSQL-NeonDB-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL">
+    <img src="https://img.shields.io/badge/MongoDB-Atlas-47A248?style=flat-square&logo=mongodb&logoColor=white" alt="MongoDB">
+    <img src="https://img.shields.io/badge/License-Proprietary-red?style=flat-square" alt="License">
+  </div>
+
+  <!-- Marquee strip -->
+  <div class="netflix-strip" style="position:relative;width:100%;overflow:hidden;height:36px;display:flex;align-items:center;">
+    <div style="white-space:nowrap;animation:marquee 30s linear infinite;font-family:var(--font-display);letter-spacing:6px;font-size:13px;color:white;">
+      ⬥ BEAT ANI VERSE ⬥ COMPLETE BOT SYSTEM ⬥ TELEGRAM ⬥ PRODUCTION READY ⬥ 77 FEATURES ⬥ ANIME & MANGA ⬥ POSTER GENERATION ⬥ GROUP MANAGEMENT ⬥ DUAL DATABASE ⬥ BEAT ANI VERSE ⬥ COMPLETE BOT SYSTEM ⬥ TELEGRAM ⬥ PRODUCTION READY ⬥ 77 FEATURES ⬥
+    </div>
+  </div>
+</header>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║              STICKY NAV                  ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<nav class="toc">
+  <div class="toc-inner">
+    <span class="toc-brand">BAV</span>
+    <a href="#overview">Overview</a>
+    <a href="#features">Features</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#link-provider">Link Provider</a>
+    <a href="#poster-engine">Poster Engine</a>
+    <a href="#group-mgmt">Group Mgmt</a>
+    <a href="#deployment">Deploy</a>
+    <a href="#access-control">Access</a>
+    <a href="#database">Database</a>
+    <a href="#performance">Performance</a>
+    <a href="#usecases">Use Cases</a>
+    <a href="#troubleshooting">Troubleshoot</a>
+    <a href="#advanced">Advanced</a>
+    <a href="#analytics">Analytics</a>
+    <a href="#maintenance">Maintenance</a>
+    <a href="#contributing">Contributing</a>
+    <a href="#license">License</a>
+    <a href="#credits">Credits</a>
+  </div>
+</nav>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║              OVERVIEW                    ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="overview" class="section">
+  <div class="section-header">
+    <span class="section-icon">📖</span>
+    <div>
+      <div class="section-title">Overview</div>
+    </div>
+  </div>
+
+  <div class="overview-box">
+    <p>
+      <strong>BeatAniVerse Bot</strong> is a comprehensive, production-ready Telegram bot that combines three powerful systems into one unified platform. Built for anime communities, this bot provides advanced link management, professional poster generation, and complete group administration capabilities.
+    </p>
+  </div>
+
+  <!-- Achievement stats -->
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-card-number">10K+</div>
+      <div class="stat-card-label">Active Users</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-number">500+</div>
+      <div class="stat-card-label">Managed Groups</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-number">50K+</div>
+      <div class="stat-card-label">Posters Generated</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-number">99.9%</div>
+      <div class="stat-card-label">Uptime Record</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-number">77</div>
+      <div class="stat-card-label">Modular Features</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-number">12</div>
+      <div class="stat-card-label">Poster Templates</div>
+    </div>
+  </div>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         KEY FEATURES AT A GLANCE         ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="features" class="section">
+  <div class="section-header">
+    <span class="section-icon">🌟</span>
+    <div><div class="section-title">Key Features at a Glance</div></div>
+  </div>
+
+  <div class="feature-grid perspective-wrap">
+    <!-- Link Provider -->
+    <div class="feature-card">
+      <span class="feature-card-icon">🔗</span>
+      <h3>Link Provider</h3>
+      <ul>
+        <li>Force subscription management</li>
+        <li>Expiring &amp; permanent links</li>
+        <li>Clone bot system</li>
+        <li>Broadcast automation</li>
+        <li>Auto-forwarding</li>
+        <li>Upload management</li>
+        <li>Manga tracking</li>
+      </ul>
+    </div>
+
+    <!-- Poster Engine -->
+    <div class="feature-card">
+      <span class="feature-card-icon">🎨</span>
+      <h3>Poster Engine</h3>
+      <ul>
+        <li>12 professional templates</li>
+        <li>6-layer composition</li>
+        <li>AniList / MAL integration</li>
+        <li>Premium tier system</li>
+        <li>Watermark support</li>
+        <li>Custom branding</li>
+        <li>High-quality 300 DPI output</li>
+      </ul>
+    </div>
+
+    <!-- Group Management -->
+    <div class="feature-card">
+      <span class="feature-card-icon">🤖</span>
+      <h3>Group Management</h3>
+      <ul>
+        <li>77 modular features</li>
+        <li>Admin automation</li>
+        <li>Anti-spam / flood</li>
+        <li>Custom filters</li>
+        <li>Welcome system</li>
+        <li>Warning system</li>
+        <li>Comprehensive logging</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         PROJECT ARCHITECTURE             ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="architecture" class="section">
+  <div class="section-header">
+    <span class="section-icon">📦</span>
+    <div><div class="section-title">Project Architecture</div></div>
+  </div>
+
+  <div class="arch-tree">
+<span class="dir">BeatAniVerse-v2/</span>
+│
+├── <span class="dir">🤖 Core Bot Files</span>
+│   ├── <span class="file">bot.py</span>                        <span class="comment">← Main bot (7986 lines, unified logic)</span>
+│   ├── <span class="file">database_dual.py</span>              <span class="comment">← Dual DB layer (NeonDB + MongoDB)</span>
+│   ├── <span class="file">database_safe.py</span>              <span class="comment">← Legacy NeonDB-only layer (reference)</span>
+│   ├── <span class="file">poster_engine.py</span>              <span class="comment">← 6-layer poster generation engine</span>
+│   ├── <span class="file">beataniversebot_compat.py</span>     <span class="comment">← BeatVerse compatibility shim</span>
+│   └── <span class="file">health_check.py</span>               <span class="comment">← HTTP health endpoint for monitoring</span>
+│
+├── <span class="dir">🎨 Assets</span>
+│   ├── <span class="dir">fonts/</span>                        <span class="comment">← Premium fonts (Poppins, Bebas Neue, etc.)</span>
+│   └── <span class="dir">iconspng/</span>                     <span class="comment">← Platform logos (Netflix, Crunchyroll, AniList)</span>
+│
+├── <span class="dir">🔧 Configuration</span>
+│   ├── <span class="file">requirements.txt</span>              <span class="comment">← Python dependencies</span>
+│   ├── <span class="file">Dockerfile</span>                    <span class="comment">← Container configuration</span>
+│   ├── <span class="file">render.yml</span>                    <span class="comment">← Render deployment config</span>
+│   └── <span class="file">.env.example</span>                  <span class="comment">← Environment template</span>
+│
+└── <span class="dir">📚 Modules (77 Features)</span>
+    ├── <span class="dir">👑 Administration</span>
+    │   ├── <span class="file">admin.py</span>                  <span class="comment">← Group admin: title, description, stickers</span>
+    │   ├── <span class="file">promote/demote</span>            <span class="comment">← User privilege management</span>
+    │   └── <span class="file">connection.py</span>             <span class="comment">← Multi-group PM management</span>
+    │
+    ├── <span class="dir">🛡️ Security &amp; Moderation</span>
+    │   ├── <span class="file">antiflood.py</span>              <span class="comment">← Anti-flood with configurable actions</span>
+    │   ├── <span class="file">bans.py</span>                   <span class="comment">← Ban/unban/kick/temp-ban system</span>
+    │   ├── <span class="file">muting.py</span>                 <span class="comment">← Mute/unmute/temp-mute controls</span>
+    │   ├── <span class="file">warns.py</span>                  <span class="comment">← Warning system with auto-actions</span>
+    │   ├── <span class="file">blacklist.py</span>              <span class="comment">← Message blacklist filter</span>
+    │   ├── <span class="file">blacklist_stickers.py</span>     <span class="comment">← Sticker blacklist filter</span>
+    │   ├── <span class="file">blacklistusers.py</span>         <span class="comment">← User blacklist system</span>
+    │   ├── <span class="file">global_bans.py</span>            <span class="comment">← Cross-group ban system</span>
+    │   ├── <span class="file">locks.py</span>                  <span class="comment">← Media/sticker/poll/bot locks</span>
+    │   ├── <span class="file">approve.py</span>                <span class="comment">← User approval system</span>
+    │   └── <span class="file">nightmode.py</span>              <span class="comment">← Scheduled chat locking</span>
+    │
+    ├── <span class="dir">🎯 Content Management</span>
+    │   ├── <span class="file">notes.py</span>                  <span class="comment">← Saved notes with hashtag shortcuts</span>
+    │   ├── <span class="file">cust_filters.py</span>           <span class="comment">← Custom keyword→response filters</span>
+    │   ├── <span class="file">welcome.py</span>                <span class="comment">← Custom welcome/goodbye messages</span>
+    │   ├── <span class="file">rules.py</span>                  <span class="comment">← Group rules management</span>
+    │   ├── <span class="file">purge.py</span>                  <span class="comment">← Message purging tools</span>
+    │   ├── <span class="file">cleaner.py</span>                <span class="comment">← Auto-delete service messages</span>
+    │   ├── <span class="file">reactions.py</span>              <span class="comment">← Reaction message system</span>
+    │   └── <span class="file">log_channel.py</span>            <span class="comment">← Event logging to channel</span>
+    │
+    ├── <span class="dir">🎭 Anime &amp; Entertainment</span>
+    │   ├── <span class="file">anime.py</span>                  <span class="comment">← Anime info (Jikan + AniList)</span>
+    │   ├── <span class="file">animequotes.py</span>            <span class="comment">← Random anime quotes</span>
+    │   ├── <span class="file">animerequest.py</span>           <span class="comment">← Request system (anti-spam, cooldown)</span>
+    │   ├── <span class="file">imdb.py</span>                   <span class="comment">← IMDB movie/show lookup</span>
+    │   ├── <span class="file">couples.py</span>                <span class="comment">← Daily couple picker (MongoDB)</span>
+    │   ├── <span class="file">fun.py</span>                    <span class="comment">← Fun commands (flip, roll, etc.)</span>
+    │   ├── <span class="file">truth_and_dare.py</span>         <span class="comment">← Truth or dare game</span>
+    │   └── <span class="file">wallpaper.py</span>              <span class="comment">← Wallpaper search</span>
+    │
+    ├── <span class="dir">🔧 Utilities</span>
+    │   ├── <span class="file">afk.py</span>                    <span class="comment">← AFK status with auto-unmention</span>
+    │   ├── <span class="file">userinfo.py</span>               <span class="comment">← User information lookup</span>
+    │   ├── <span class="file">users.py</span>                  <span class="comment">← User tracking system</span>
+    │   ├── <span class="file">translator.py</span>             <span class="comment">← Multi-language translation</span>
+    │   ├── <span class="file">currency_converter.py</span>     <span class="comment">← Live currency conversion</span>
+    │   ├── <span class="file">google.py</span>                 <span class="comment">← Google search integration</span>
+    │   ├── <span class="file">wiki.py</span>                   <span class="comment">← Wikipedia search</span>
+    │   ├── <span class="file">ud.py</span>                     <span class="comment">← Urban Dictionary lookup</span>
+    │   ├── <span class="file">telegraph.py</span>              <span class="comment">← Telegraph post creator</span>
+    │   ├── <span class="file">fonts.py</span>                  <span class="comment">← Font stylizer</span>
+    │   ├── <span class="file">writetool.py</span>              <span class="comment">← Text styling tools</span>
+    │   ├── <span class="file">stickers.py</span>               <span class="comment">← Sticker pack management</span>
+    │   ├── <span class="file">memify.py</span>                 <span class="comment">← Meme generator</span>
+    │   ├── <span class="file">logo.py</span>                   <span class="comment">← Logo generator</span>
+    │   ├── <span class="file">sed.py</span>                    <span class="comment">← Text find &amp; replace</span>
+    │   ├── <span class="file">zip.py</span>                    <span class="comment">← File zip/unzip</span>
+    │   └── <span class="file">reporting.py</span>              <span class="comment">← User reporting system</span>
+    │
+    ├── <span class="dir">🎮 Engagement</span>
+    │   ├── <span class="file">tagall.py</span>                 <span class="comment">← Tag all members</span>
+    │   ├── <span class="file">chatbot.py</span>                <span class="comment">← AI chatbot (MongoDB-backed)</span>
+    │   ├── <span class="file">inline.py</span>                 <span class="comment">← Inline query mode</span>
+    │   └── <span class="file">misc.py</span>                   <span class="comment">← Miscellaneous commands</span>
+    │
+    ├── <span class="dir">🔐 Privilege Management</span>
+    │   ├── <span class="file">disasters.py</span>              <span class="comment">← Global disaster/sudo management</span>
+    │   ├── <span class="file">sudoers.py</span>                <span class="comment">← Sudo user management</span>
+    │   ├── <span class="file">disable.py</span>                <span class="comment">← Command disable/enable per chat</span>
+    │   ├── <span class="file">fsub.py</span>                   <span class="comment">← Force subscription (SQL-backed)</span>
+    │   ├── <span class="file">eval.py</span>                   <span class="comment">← Python eval (owner only)</span>
+    │   └── <span class="file">shell.py</span>                  <span class="comment">← Shell execution (owner only)</span>
+    │
+    ├── <span class="dir">🗄️ Database</span>
+    │   ├── <span class="file">dbcleanup.py</span>              <span class="comment">← Database maintenance tools</span>
+    │   └── <span class="dir">sql/</span>                      <span class="comment">← 24 SQLAlchemy model files</span>
+    │
+    └── <span style="color:var(--red)">✅ All modules fully integrated and production-ready!</span>
+  </div>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║       COMPLETE FEATURE BREAKDOWN         ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+
+<!-- ══ LINK PROVIDER ══ -->
+<section id="link-provider" class="section">
+  <div class="section-header">
+    <span class="section-icon">🔗</span>
+    <div><div class="section-title">Link Provider System</div></div>
+  </div>
+  <p style="font-family:var(--font-ui);color:var(--text-dim);font-size:13px;letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;">Powered by Beat Anime Link Provider Bot</p>
+
+  <details>
+    <summary>📋 Channel Management</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Command</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Add Channel</strong></td><td><code>/addchannel @username_or_id [Title] [jbr]</code></td><td>Add force-sub channel by username or ID</td></tr>
+            <tr><td><strong>Remove Channel</strong></td><td><code>/removechannel @username_or_id</code></td><td>Remove force-sub channel</td></tr>
+            <tr><td><strong>List Channels</strong></td><td><code>/channel</code></td><td>Display all configured channels</td></tr>
+            <tr><td><strong>Expiring Links</strong></td><td>Admin Panel → Generate Link</td><td>Create 5-minute expiring invite links</td></tr>
+            <tr><td><strong>Permanent Links</strong></td><td><code>/start link_XXX</code></td><td>Bot deep links (never expire)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>🤖 Clone Bot Management</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Command</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Add Clone</strong></td><td><code>/addclone TOKEN</code></td><td>Register a clone bot instance</td></tr>
+            <tr><td><strong>List Clones</strong></td><td><code>/clones</code></td><td>View all registered clone bots</td></tr>
+            <tr><td><strong>Remove Clone</strong></td><td>Admin Panel</td><td>Deregister clone bot</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>📢 Broadcasting System</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Access Point</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Broadcast Message</strong></td><td>Admin Panel → Broadcast</td><td>Send message to all users</td></tr>
+            <tr><td><strong>Scheduled Broadcast</strong></td><td>Admin Panel → Schedule</td><td>Schedule future broadcasts</td></tr>
+            <tr><td><strong>Broadcast Analytics</strong></td><td>Admin Panel</td><td>Track delivery &amp; engagement</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔄 Content Management</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Command</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Auto-Forward</strong></td><td><code>/autoforward</code></td><td>Configure auto-forwarding with filters</td></tr>
+            <tr><td><strong>Upload Manager</strong></td><td><code>/upload</code></td><td>Multi-quality upload with captions</td></tr>
+            <tr><td><strong>Manga Tracker</strong></td><td><code>/autoupdate</code></td><td>MangaDex chapter tracking</td></tr>
+            <tr><td><strong>Category Settings</strong></td><td><code>/settings</code></td><td>Watermark, logo, template, buttons</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>👥 User Management</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Command</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Ban User</strong></td><td><code>/banuser ID</code></td><td>Ban user from bot access</td></tr>
+            <tr><td><strong>Unban User</strong></td><td><code>/unbanuser ID</code></td><td>Restore user access</td></tr>
+            <tr><td><strong>Export Users</strong></td><td><code>/exportusers</code></td><td>Export user database</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔧 Advanced Features</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Feature</th><th>Access Point</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Group Connections</strong></td><td><code>/connect</code>, <code>/disconnect</code></td><td>Link multiple groups for PM control</td></tr>
+            <tr><td><strong>Feature Flags</strong></td><td>Admin Panel → Feature Flags</td><td>Toggle bot features dynamically</td></tr>
+            <tr><td><strong>Custom Help</strong></td><td>Environment Variable</td><td>Fully customizable help message</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ══ POSTER ENGINE ══ -->
+<section id="poster-engine" class="section">
+  <div class="section-header">
+    <span class="section-icon">🎨</span>
+    <div><div class="section-title">Professional Poster Generation</div></div>
+  </div>
+  <p style="font-family:var(--font-ui);color:var(--text-dim);font-size:13px;letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;">Powered by Postermaking Bot</p>
+
+  <details>
+    <summary>🖼️ Available Templates (12 Designs)</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Template Name</th><th>Command</th><th>Media Type</th><th>Style</th></tr></thead>
+          <tbody>
+            <tr><td><strong>AniList Anime</strong></td><td><code>/ani &lt;title&gt;</code></td><td>Anime</td><td>Modern gradient with AniList branding</td></tr>
+            <tr><td><strong>AniList Manga</strong></td><td><code>/anim &lt;title&gt;</code></td><td>Manga</td><td>Modern gradient with AniList branding</td></tr>
+            <tr><td><strong>Crunchyroll</strong></td><td><code>/crun &lt;title&gt;</code></td><td>Anime</td><td>Orange accent, Crunchyroll theme</td></tr>
+            <tr><td><strong>Netflix Anime</strong></td><td><code>/net &lt;title&gt;</code></td><td>Anime</td><td>Red accent, Netflix theme</td></tr>
+            <tr><td><strong>Netflix Manga</strong></td><td><code>/netm &lt;title&gt;</code></td><td>Manga</td><td>Red accent, Netflix theme</td></tr>
+            <tr><td><strong>Light Anime</strong></td><td><code>/light &lt;title&gt;</code></td><td>Anime</td><td>Clean, minimalist light theme</td></tr>
+            <tr><td><strong>Light Manga</strong></td><td><code>/lightm &lt;title&gt;</code></td><td>Manga</td><td>Clean, minimalist light theme</td></tr>
+            <tr><td><strong>Dark Anime</strong></td><td><code>/dark &lt;title&gt;</code></td><td>Anime</td><td>Sleek, modern dark theme</td></tr>
+            <tr><td><strong>Dark Manga</strong></td><td><code>/darkm &lt;title&gt;</code></td><td>Manga</td><td>Sleek, modern dark theme</td></tr>
+            <tr><td><strong>Netflix × Crunchyroll</strong></td><td><code>/netcr &lt;title&gt;</code></td><td>Anime</td><td>Hybrid dual-platform branding</td></tr>
+            <tr><td><strong>Modern Anime</strong></td><td><code>/mod &lt;title&gt;</code></td><td>Anime</td><td>Contemporary glass-morphism style</td></tr>
+            <tr><td><strong>Modern Manga</strong></td><td><code>/modm &lt;title&gt;</code></td><td>Manga</td><td>Contemporary glass-morphism style</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="alert alert-amber">
+        <span class="alert-icon">⚠️</span>
+        <span><strong>Access Control:</strong> All poster commands are admin-only. Regular users can only use <code>/my_plan</code> and <code>/plans</code>.</span>
+      </div>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎨 6-Layer Poster Composition Engine</summary>
+    <div class="details-content">
+      <h4>Layer Stack (Bottom to Top):</h4>
+      <ol style="list-style:none;counter-reset:layers;">
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;border-bottom:1px solid var(--border-dim);">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">01</span>
+          <div><strong>Gradient Background Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">Dynamic color schemes based on template · Smooth multi-stop gradients · Template-specific color palettes</span></div>
+        </li>
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;border-bottom:1px solid var(--border-dim);">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">02</span>
+          <div><strong>Blurred Cover Art Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">Full-bleed background effect · Gaussian blur with optimized radius · Provides depth and visual context</span></div>
+        </li>
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;border-bottom:1px solid var(--border-dim);">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">03</span>
+          <div><strong>Cover Art Overlay Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">High-resolution cover image · Rounded corners with shadow · Professional drop shadow effect · Positioned for optimal composition</span></div>
+        </li>
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;border-bottom:1px solid var(--border-dim);">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">04</span>
+          <div><strong>Branding &amp; Metadata Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">Score badge with rating · Colored accent bar · Platform logo (Netflix, Crunchyroll, AniList) · Status pill indicator</span></div>
+        </li>
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;border-bottom:1px solid var(--border-dim);">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">05</span>
+          <div><strong>Typography &amp; Information Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">Primary title (Poppins Bold) · Native title (transliteration) · Status pill (Airing, Completed, etc.) · Information rows (Episodes, Duration, Genres) · Synopsis with text wrapping · Smart truncation for long descriptions</span></div>
+        </li>
+        <li style="counter-increment:layers;display:flex;gap:16px;padding:14px 0;">
+          <span style="font-family:var(--font-display);font-size:28px;color:var(--red);flex-shrink:0;line-height:1;">06</span>
+          <div><strong>Watermark &amp; Footer Layer</strong><br><span style="font-family:var(--font-ui);font-size:13px;color:var(--text-dim);">Configurable watermark positioning · Footer bar with branding · Template-specific accents</span></div>
+        </li>
+      </ol>
+      <h4 style="margin-top:20px;">Technical Features:</h4>
+      <ul>
+        <li>Anti-aliasing for smooth edges</li>
+        <li>Color-matched text for readability</li>
+        <li>Responsive layout for different content lengths</li>
+        <li>High-DPI output (300 DPI)</li>
+        <li>PNG format with transparency support</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>💎 Premium Tier System</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Tier</th><th>Daily Limit</th><th>Command</th><th>Duration Options</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tier-free"><strong>Free</strong></span></td><td>20 posters</td><td>—</td><td>Default for all users</td></tr>
+            <tr><td><span class="tier-bronze"><strong>🥉 Bronze</strong></span></td><td>30 posters</td><td><code>/add_premium ID bronze 7d</code></td><td>7d, 30d</td></tr>
+            <tr><td><span class="tier-silver"><strong>🥈 Silver</strong></span></td><td>40 posters</td><td><code>/add_premium ID silver 1m</code></td><td>30d, 90d</td></tr>
+            <tr><td><span class="tier-gold"><strong>🥇 Gold</strong></span></td><td>50 posters</td><td><code>/add_premium ID gold permanent</code></td><td>permanent, 365d</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h4>Premium Management Commands:</h4>
+      <ul>
+        <li><code>/add_premium &lt;user_id&gt; &lt;tier&gt; &lt;duration&gt;</code> — Grant premium access</li>
+        <li><code>/remove_premium &lt;user_id&gt;</code> — Revoke premium access</li>
+        <li><code>/premium_stats</code> — View premium user statistics</li>
+        <li><code>/my_plan</code> — Check personal plan status</li>
+        <li><code>/plans</code> — View all available plans</li>
+      </ul>
+      <h4>Duration Formats:</h4>
+      <ul>
+        <li><code>7d</code>, <code>30d</code>, <code>90d</code>, <code>365d</code> — Days</li>
+        <li><code>1m</code>, <code>3m</code>, <code>6m</code>, <code>12m</code> — Months</li>
+        <li><code>permanent</code> — Lifetime access</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>📊 Poster Analytics</summary>
+    <div class="details-content">
+      <ul>
+        <li>Daily usage tracking per user</li>
+        <li>Premium tier monitoring</li>
+        <li>Template popularity metrics</li>
+        <li>Performance optimization insights</li>
+        <li>MongoDB-backed analytics</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ══ GROUP MANAGEMENT ══ -->
+<section id="group-mgmt" class="section">
+  <div class="section-header">
+    <span class="section-icon">🤖</span>
+    <div><div class="section-title">Advanced Group Management</div></div>
+  </div>
+  <p style="font-family:var(--font-ui);color:var(--text-dim);font-size:13px;letter-spacing:2px;text-transform:uppercase;margin-bottom:24px;">Powered by BeatVerse Bot (77 Modules)</p>
+
+  <details>
+    <summary>👑 Administration Tools</summary>
+    <div class="details-content">
+      <h4>User Management:</h4>
+      <ul>
+        <li><code>/promote</code> — Grant admin privileges</li>
+        <li><code>/demote</code> — Revoke admin privileges</li>
+        <li><code>/admins</code> — List group administrators</li>
+        <li><code>/invitelink</code> — Generate invite link</li>
+      </ul>
+      <h4>Group Settings:</h4>
+      <ul>
+        <li><code>/settitle &lt;title&gt;</code> — Change group title</li>
+        <li><code>/setdescription &lt;desc&gt;</code> — Update group description</li>
+        <li><code>/setgpic</code> — Set group photo</li>
+        <li><code>/setsticker</code> — Set group sticker set</li>
+      </ul>
+      <h4>Pin Management:</h4>
+      <ul>
+        <li><code>/pin</code> — Pin message (reply)</li>
+        <li><code>/unpin</code> — Unpin message</li>
+        <li><code>/unpinall</code> — Remove all pins</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🛡️ Security &amp; Anti-Spam</summary>
+    <div class="details-content">
+      <h4>Anti-Flood:</h4>
+      <ul>
+        <li>Configurable flood detection</li>
+        <li>Actions: kick, ban, mute, warn</li>
+        <li>Customizable thresholds</li>
+        <li>Whitelist support</li>
+      </ul>
+      <h4>Ban System:</h4>
+      <ul>
+        <li><code>/ban</code> — Permanently ban user</li>
+        <li><code>/unban</code> — Unban user</li>
+        <li><code>/kick</code> — Remove user (can rejoin)</li>
+        <li><code>/tban &lt;time&gt;</code> — Temporary ban (1h, 1d, 1w formats)</li>
+      </ul>
+      <h4>Mute System:</h4>
+      <ul>
+        <li><code>/mute</code> — Permanently mute user</li>
+        <li><code>/unmute</code> — Unmute user</li>
+        <li><code>/tmute &lt;time&gt;</code> — Temporary mute</li>
+      </ul>
+      <h4>Warning System:</h4>
+      <ul>
+        <li><code>/warn</code> — Issue warning to user</li>
+        <li><code>/warns</code> — Check user warnings</li>
+        <li><code>/resetwarns</code> — Clear warnings</li>
+        <li>Configurable auto-action (ban/mute/kick) at warning limit</li>
+      </ul>
+      <h4>Blacklist Filters:</h4>
+      <ul>
+        <li><code>/addblacklist &lt;word&gt;</code> — Add text blacklist</li>
+        <li><code>/blacklist</code> — View blacklisted words</li>
+        <li><code>/rmblacklist &lt;word&gt;</code> — Remove from blacklist</li>
+        <li><code>/blackliststicker</code> — Blacklist stickers</li>
+        <li><code>/blacklistuser</code> — Blacklist specific users</li>
+      </ul>
+      <h4>Chat Locks:</h4>
+      <ul>
+        <li><code>/lock &lt;type&gt;</code> — Lock specific content types</li>
+        <li><code>/unlock &lt;type&gt;</code> — Unlock content types</li>
+        <li>Lockable: messages, media, stickers, polls, bots, forward, url, etc.</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎯 Content &amp; Engagement</summary>
+    <div class="details-content">
+      <h4>Custom Filters:</h4>
+      <ul>
+        <li><code>/filter &lt;keyword&gt; &lt;response&gt;</code> — Create filter</li>
+        <li><code>/filters</code> — List all filters</li>
+        <li><code>/stop &lt;keyword&gt;</code> — Remove filter</li>
+        <li>Supports text, photo, sticker, document responses</li>
+      </ul>
+      <h4>Notes System:</h4>
+      <ul>
+        <li><code>/save &lt;notename&gt; &lt;content&gt;</code> — Save note</li>
+        <li><code>/get &lt;notename&gt;</code> — Retrieve note</li>
+        <li><code>#notename</code> — Quick note retrieval</li>
+        <li><code>/notes</code> — List saved notes</li>
+        <li><code>/clear &lt;notename&gt;</code> — Delete note</li>
+      </ul>
+      <h4>Welcome System:</h4>
+      <ul>
+        <li><code>/setwelcome &lt;message&gt;</code> — Custom welcome</li>
+        <li><code>/resetwelcome</code> — Reset to default</li>
+        <li><code>/setgoodbye &lt;message&gt;</code> — Custom goodbye</li>
+        <li>Supports HTML formatting · Button support for links · User mention placeholders</li>
+      </ul>
+      <h4>Rules:</h4>
+      <ul>
+        <li><code>/setrules &lt;rules&gt;</code> — Set group rules</li>
+        <li><code>/rules</code> — Display rules</li>
+        <li>Markdown/HTML formatting</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎭 Anime &amp; Fun Features</summary>
+    <div class="details-content">
+      <h4>Anime Integration:</h4>
+      <ul>
+        <li><code>/anime &lt;title&gt;</code> — Search anime (Jikan + AniList)</li>
+        <li><code>/manga &lt;title&gt;</code> — Search manga</li>
+        <li><code>/animequote</code> — Random anime quote</li>
+        <li><code>/request &lt;anime&gt;</code> — Request anime (with spam protection)</li>
+        <li><code>/myrequests</code> — View your requests</li>
+      </ul>
+      <h4>Entertainment:</h4>
+      <ul>
+        <li><code>/couple</code> — Daily couple of the day</li>
+        <li><code>/truth</code> — Random truth question</li>
+        <li><code>/dare</code> — Random dare challenge</li>
+        <li><code>/roll</code> — Roll dice</li>
+        <li><code>/flip</code> — Flip coin</li>
+        <li><code>/wallpaper &lt;query&gt;</code> — Search wallpapers</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔧 Utility Commands</summary>
+    <div class="details-content">
+      <h4>User Tools:</h4>
+      <ul>
+        <li><code>/afk &lt;reason&gt;</code> — Set AFK status</li>
+        <li><code>/info</code> — User information</li>
+        <li><code>/id</code> — Get user/chat ID</li>
+      </ul>
+      <h4>Search &amp; Lookup:</h4>
+      <ul>
+        <li><code>/imdb &lt;title&gt;</code> — Movie/show information</li>
+        <li><code>/google &lt;query&gt;</code> — Google search</li>
+        <li><code>/wiki &lt;query&gt;</code> — Wikipedia search</li>
+        <li><code>/ud &lt;term&gt;</code> — Urban Dictionary</li>
+        <li><code>/tr &lt;lang&gt; &lt;text&gt;</code> — Translate text</li>
+        <li><code>/currency &lt;amount&gt; &lt;from&gt; &lt;to&gt;</code> — Convert currency</li>
+      </ul>
+      <h4>Content Creation:</h4>
+      <ul>
+        <li><code>/telegraph</code> — Create Telegraph post</li>
+        <li><code>/font &lt;text&gt;</code> — Stylize fonts</li>
+        <li><code>/write &lt;text&gt;</code> — Text styling</li>
+        <li><code>/sticker</code> — Sticker pack tools</li>
+        <li><code>/memify &lt;top&gt; &lt;bottom&gt;</code> — Create meme</li>
+        <li><code>/logo &lt;text&gt;</code> — Generate logo</li>
+      </ul>
+      <h4>Moderation:</h4>
+      <ul>
+        <li><code>/purge</code> — Delete messages</li>
+        <li><code>/del</code> — Delete single message</li>
+        <li><code>/report</code> — Report to admins</li>
+        <li><code>/tagall</code> — Mention all members</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔐 Advanced Controls</summary>
+    <div class="details-content">
+      <h4>Multi-Group Management:</h4>
+      <ul>
+        <li><code>/connect &lt;chat_id&gt;</code> — Connect to group from PM</li>
+        <li><code>/disconnect</code> — Disconnect from group</li>
+        <li><code>/connection</code> — View connection status</li>
+        <li>Manage multiple groups from private messages</li>
+      </ul>
+      <h4>Night Mode:</h4>
+      <ul>
+        <li><code>/nightmode &lt;on/off&gt;</code> — Enable auto-locking</li>
+        <li><code>/nightmodegroup &lt;time&gt;</code> — Set lock schedule</li>
+        <li>Automatically locks group at night · Configurable open/close times</li>
+      </ul>
+      <h4>Approval System:</h4>
+      <ul>
+        <li><code>/approve</code> — Approve user (bypass restrictions)</li>
+        <li><code>/disapprove</code> — Remove approval</li>
+        <li><code>/approved</code> — List approved users</li>
+      </ul>
+      <h4>Logging:</h4>
+      <ul>
+        <li><code>/setlog</code> — Set log channel</li>
+        <li><code>/unsetlog</code> — Disable logging</li>
+        <li>Logs: bans, warns, notes, filters, admin actions</li>
+      </ul>
+      <h4>Database Cleanup:</h4>
+      <ul>
+        <li><code>/dbcleanup</code> — Clean orphaned data</li>
+        <li><code>/listchats</code> — List all bot groups</li>
+        <li>Automatic cleanup scheduling</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎮 Inline Mode</summary>
+    <div class="details-content">
+      <p>Use inline queries to search anime/manga anywhere in Telegram:</p>
+      <ul>
+        <li><code>@YourBot anime naruto</code> — Search anime</li>
+        <li><code>@YourBot manga one piece</code> — Search manga</li>
+        <li>Results with cover images and descriptions</li>
+        <li>Direct sharing to chats</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║           DEPLOYMENT GUIDE               ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="deployment" class="section">
+  <div class="section-header">
+    <span class="section-icon">🚀</span>
+    <div><div class="section-title">Deployment Guide</div></div>
+  </div>
+
+  <h3>Prerequisites</h3>
+  <ul class="checklist">
+    <li><strong>Telegram Bot Token</strong> from <a href="https://t.me/BotFather">@BotFather</a></li>
+    <li><strong>Your Telegram User ID</strong> (get from <a href="https://t.me/userinfobot">@userinfobot</a>)</li>
+    <li><strong>NeonDB PostgreSQL Database</strong> (<a href="https://neon.tech">Free Tier</a>)</li>
+    <li><strong>MongoDB Atlas Cluster</strong> (<a href="https://www.mongodb.com/cloud/atlas">Free Tier</a>)</li>
+    <li><strong>Render Account</strong> (<a href="https://render.com">Free Tier</a>)</li>
+    <li class="optional"><strong>TMDB API Key</strong> (optional, for movie/TV features)</li>
+  </ul>
+
+  <h3>Step 1: Database Setup</h3>
+
+  <details>
+    <summary>📊 PostgreSQL (NeonDB)</summary>
+    <div class="details-content">
+      <ol class="steps-list">
+        <li>Create account at <a href="https://neon.tech">neon.tech</a></li>
+        <li>Create new project</li>
+        <li>Copy connection string (starts with <code>postgresql://</code>)</li>
+        <li>Format: <code>postgresql://user:password@host/database?sslmode=require</code></li>
+      </ol>
+      <h4>Used for:</h4>
+      <ul>
+        <li>Link provider data · Force-sub channels · Generated links &amp; clone bots</li>
+        <li>Broadcast history · Upload progress · Category settings</li>
+        <li>Group management modules · Notes, warns, bans, filters</li>
+        <li>Welcome/goodbye messages · All SQL-backed features</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🍃 MongoDB (Atlas)</summary>
+    <div class="details-content">
+      <ol class="steps-list">
+        <li>Create account at <a href="https://www.mongodb.com/cloud/atlas">mongodb.com</a></li>
+        <li>Create free cluster (M0)</li>
+        <li>Create database user</li>
+        <li>Whitelist all IPs (<code>0.0.0.0/0</code>)</li>
+        <li>Get connection string</li>
+        <li>Format: <code>mongodb+srv://user:password@cluster.mongodb.net/database</code></li>
+      </ol>
+      <h4>Used for:</h4>
+      <ul>
+        <li>Poster premium plans · Daily usage tracking</li>
+        <li>Couples system · Chatbot data · User analytics</li>
+        <li>Speed-optimized queries</li>
+      </ul>
+    </div>
+  </details>
+
+  <h3>Step 2: Environment Configuration</h3>
+
+  <details>
+    <summary>🔐 Required Variables</summary>
+    <div class="details-content">
+      <pre># Bot Configuration (REQUIRED)
+BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+ADMIN_ID=123456789
+OWNER_ID=123456789
+BOT_NAME=BeatAniVerse Bot
+
+# Database Configuration (At least one required, both recommended)
+DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+MONGO_DB_URI=mongodb+srv://user:password@cluster.mongodb.net/database
+
+# Channel Configuration (REQUIRED)
+PUBLIC_ANIME_CHANNEL_URL=https://t.me/YourChannel</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>⚙️ Optional Variables</summary>
+    <div class="details-content">
+      <pre># Help Message Customization
+HELP_TEXT_CUSTOM=&lt;b&gt;Welcome to BeatAniVerse!&lt;/b&gt;\n\nYour custom help text here...
+HELP_CHANNEL_1_URL=https://t.me/YourChannel1
+HELP_CHANNEL_1_NAME=📣 Main Channel
+HELP_CHANNEL_2_URL=https://t.me/YourChannel2
+HELP_CHANNEL_3_URL=https://t.me/YourChannel3
+
+# API Keys
+TMDB_API_KEY=your_tmdb_api_key_here
+
+# Link Configuration
+LINK_EXPIRY_MINUTES=5
+
+# Welcome Message Source
+WELCOME_SOURCE_CHANNEL=-1001234567890
+WELCOME_SOURCE_MESSAGE_ID=123</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>📋 Complete Variable Reference</summary>
+    <div class="details-content">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Variable</th><th>Required</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>BOT_TOKEN</code></td><td>✅</td><td>—</td><td>Bot token from @BotFather</td></tr>
+            <tr><td><code>ADMIN_ID</code></td><td>✅</td><td>—</td><td>Your Telegram numeric user ID</td></tr>
+            <tr><td><code>OWNER_ID</code></td><td>✅</td><td>—</td><td>Same as ADMIN_ID (owner privileges)</td></tr>
+            <tr><td><code>DATABASE_URL</code></td><td>✅*</td><td>—</td><td>NeonDB PostgreSQL connection string</td></tr>
+            <tr><td><code>MONGO_DB_URI</code></td><td>✅*</td><td>—</td><td>MongoDB Atlas connection string</td></tr>
+            <tr><td><code>BOT_NAME</code></td><td>✅</td><td>—</td><td>Display name for the bot</td></tr>
+            <tr><td><code>PUBLIC_ANIME_CHANNEL_URL</code></td><td>✅</td><td>—</td><td>Your main Telegram channel URL</td></tr>
+            <tr><td><code>HELP_TEXT_CUSTOM</code></td><td>⭕</td><td>Generic</td><td>Custom /help message (HTML supported)</td></tr>
+            <tr><td><code>HELP_CHANNEL_1_URL</code></td><td>⭕</td><td>—</td><td>First help button URL</td></tr>
+            <tr><td><code>HELP_CHANNEL_1_NAME</code></td><td>⭕</td><td>Channel</td><td>First help button label</td></tr>
+            <tr><td><code>HELP_CHANNEL_2_URL</code></td><td>⭕</td><td>—</td><td>Second help button URL</td></tr>
+            <tr><td><code>HELP_CHANNEL_3_URL</code></td><td>⭕</td><td>—</td><td>Third help button URL</td></tr>
+            <tr><td><code>TMDB_API_KEY</code></td><td>⭕</td><td>—</td><td>For /movie and /tvshow commands</td></tr>
+            <tr><td><code>LINK_EXPIRY_MINUTES</code></td><td>⭕</td><td>5</td><td>Minutes before channel links expire</td></tr>
+            <tr><td><code>WELCOME_SOURCE_CHANNEL</code></td><td>⭕</td><td>—</td><td>Channel ID to clone welcome from</td></tr>
+            <tr><td><code>WELCOME_SOURCE_MESSAGE_ID</code></td><td>⭕</td><td>—</td><td>Message ID to clone</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="alert alert-amber">
+        <span class="alert-icon">⚠️</span>
+        <span>* At least one database (PostgreSQL or MongoDB) required. Both highly recommended for full functionality.</span>
+      </div>
+    </div>
+  </details>
+
+  <h3>Step 3: Deploy to Render</h3>
+
+  <details>
+    <summary>🚀 Deployment Steps</summary>
+    <div class="details-content">
+      <ol class="steps-list">
+        <li><strong>Fork/Clone Repository</strong><pre>git clone https://github.com/yourusername/BeatAniVerse-v2.git
+cd BeatAniVerse-v2</pre></li>
+        <li><strong>Push to GitHub</strong><pre>git add .
+git commit -m "Initial commit"
+git push origin main</pre></li>
+        <li><strong>Create Render Web Service</strong><br>Go to <a href="https://dashboard.render.com">Render Dashboard</a> → Click "New +" → "Web Service" → Connect your GitHub repository<br>Configure: Name: <code>beataniverse-bot</code> · Environment: <code>Docker</code> · Plan: <code>Free</code> · Branch: <code>main</code></li>
+        <li><strong>Add Environment Variables</strong><br>In Render dashboard → "Environment" → Add all variables from your <code>.env</code> file → "Save Changes"</li>
+        <li><strong>Deploy</strong><br>Render will automatically build and deploy · Monitor logs for any errors · Wait for "Live" status</li>
+        <li><strong>Verify Deployment</strong><br>Send <code>/start</code> to your bot on Telegram · Check bot responds correctly · Test basic commands</li>
+      </ol>
+    </div>
+  </details>
+
+  <details>
+    <summary>⚡ Keep Bot Alive (Prevent Sleep)</summary>
+    <div class="details-content">
+      <p>Render free tier apps sleep after 15 minutes of inactivity. Use UptimeRobot to keep your bot awake:</p>
+      <ol class="steps-list">
+        <li><strong>Sign up at <a href="https://uptimerobot.com">UptimeRobot</a></strong> — Create free account</li>
+        <li><strong>Add New Monitor</strong><br>Type: <code>HTTP(s)</code> · Friendly Name: <code>BeatAniVerse Bot</code> · URL: <code>https://your-app-name.onrender.com/health</code> · Monitoring Interval: <code>5 minutes</code></li>
+        <li><strong>Save Monitor</strong> — UptimeRobot will ping every 5 minutes · Keeps bot active 24/7 · Free tier includes 50 monitors</li>
+      </ol>
+      <h4>Alternative Keep-Alive Services:</h4>
+      <ul>
+        <li><a href="https://uptime.com">Uptime.com</a> (100 free checks)</li>
+        <li><a href="https://www.freshworks.com/website-monitoring/">Freshping</a> (Free tier)</li>
+        <li><a href="https://betteruptime.com">Better Uptime</a> (Free plan)</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🐳 Docker Deployment (Alternative)</summary>
+    <div class="details-content">
+      <pre># Build image
+docker build -t beataniverse-bot .
+
+# Run container
+docker run -d \
+  --name beataniverse \
+  --env-file .env \
+  -p 8080:8080 \
+  --restart unless-stopped \
+  beataniverse-bot
+
+# View logs
+docker logs -f beataniverse
+
+# Stop container
+docker stop beataniverse</pre>
+    </div>
+  </details>
+
+  <h3>Step 4: Post-Deployment Setup</h3>
+
+  <details>
+    <summary>🔧 Initial Configuration</summary>
+    <div class="details-content">
+      <ol class="steps-list">
+        <li><strong>Add Force-Sub Channels</strong><pre>/addchannel @YourChannel Main Channel
+/addchannel -1001234567890 Secondary Channel</pre></li>
+        <li><strong>Configure Poster Settings</strong><pre>/settings</pre>Set watermark text &amp; position · Upload custom logo · Choose default template · Configure buttons</li>
+        <li><strong>Set Up Welcome Message</strong><pre>/setwelcome &lt;b&gt;Welcome {first}!&lt;/b&gt;\n\nEnjoy your stay!</pre></li>
+        <li><strong>Add Group Rules</strong><pre>/setrules &lt;b&gt;Rules:&lt;/b&gt;\n1. Be respectful\n2. No spam\n3. Have fun!</pre></li>
+        <li><strong>Configure Logging</strong><pre>/setlog</pre>(Reply in log channel)</li>
+      </ol>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         ACCESS CONTROL                   ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="access-control" class="section">
+  <div class="section-header">
+    <span class="section-icon">🔒</span>
+    <div><div class="section-title">Access Control &amp; Permissions</div></div>
+  </div>
+
+  <h3>Command Accessibility Matrix</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Command Category</th><th>Public Users</th><th>Group Members</th><th>Admins</th><th>Owner</th></tr></thead>
+      <tbody>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Basic Commands</td></tr>
+        <tr><td><code>/start</code>, <code>/ping</code>, <code>/alive</code></td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td><code>/id</code>, <code>/info</code>, <code>/help</code></td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Poster Commands</td></tr>
+        <tr><td><code>/my_plan</code>, <code>/plans</code></td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>All 12 poster templates</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Anime Features</td></tr>
+        <tr><td><code>/request</code>, <code>/myrequests</code></td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td><code>/anime</code>, <code>/manga</code>, <code>/movie</code></td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Group Features</td></tr>
+        <tr><td><code>/couple</code>, <code>/afk</code>, <code>/rules</code></td><td>—</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td>Fun commands, games</td><td>—</td><td>✅</td><td>✅</td><td>✅</td></tr>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Moderation</td></tr>
+        <tr><td><code>/warn</code>, <code>/ban</code>, <code>/mute</code>, <code>/kick</code></td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+        <tr><td><code>/lock</code>, <code>/unlock</code>, filters</td><td>❌</td><td>❌</td><td>✅</td><td>✅</td></tr>
+        <tr><td colspan="5" style="background:rgba(229,9,20,0.08);font-family:var(--font-ui);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);padding:8px 16px;">Administration</td></tr>
+        <tr><td><code>/addchannel</code>, <code>/settings</code></td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td><code>/broadcast</code>, <code>/addclone</code></td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+        <tr><td><code>/eval</code>, <code>/shell</code></td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <details>
+    <summary>🛡️ Rate Limiting &amp; Spam Protection</summary>
+    <div class="details-content">
+      <h4>Anime Requests:</h4>
+      <ul>
+        <li>5 requests per user per day</li>
+        <li>30-minute cooldown between requests</li>
+        <li>AniList validation required</li>
+        <li>Duplicate request detection</li>
+      </ul>
+      <h4>Poster Generation:</h4>
+      <ul>
+        <li>Free: 20 posters/day</li>
+        <li>Bronze: 30 posters/day</li>
+        <li>Silver: 40 posters/day</li>
+        <li>Gold: 50 posters/day</li>
+      </ul>
+      <h4>Broadcast System:</h4>
+      <ul>
+        <li>Owner-only access · Delivery rate limiting</li>
+        <li>Failed delivery tracking · Analytics dashboard</li>
+      </ul>
+      <h4>Anti-Flood:</h4>
+      <ul>
+        <li>Configurable per group</li>
+        <li>Default: 5 messages in 3 seconds</li>
+        <li>Actions: warn, mute, kick, ban</li>
+        <li>Admin whitelist</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         DATABASE ARCHITECTURE            ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="database" class="section">
+  <div class="section-header">
+    <span class="section-icon">🗄️</span>
+    <div><div class="section-title">Database Architecture</div></div>
+  </div>
+  <h3>Dual Database Strategy</h3>
+
+  <details>
+    <summary>📊 PostgreSQL (NeonDB) — Schema Overview</summary>
+    <div class="details-content">
+      <p><strong>Tables: 24+ models</strong></p>
+      <pre>-- Link Provider Tables
+force_sub_channels        → Channel configurations
+generated_links           → Expiring invite links
+clone_bots               → Clone bot registry
+broadcast_history        → Broadcast logs
+auto_forward_settings    → Auto-forward rules
+upload_sessions          → Upload tracking
+category_settings        → Template configs
+
+-- Group Management Tables
+chat_settings            → Per-group configuration
+user_data                → User profiles
+notes                    → Saved notes
+filters                  → Custom filters
+blacklist_words          → Text blacklist
+blacklist_stickers       → Sticker blacklist
+warns                    → Warning records
+bans                     → Ban records
+mutes                    → Mute records
+locks                    → Chat restrictions
+welcome_messages         → Welcome configs
+rules                    → Group rules
+connections              → Multi-group links
+log_channels             → Logging configs</pre>
+      <h4>Indexing Strategy:</h4>
+      <ul>
+        <li>Primary keys on all tables</li>
+        <li>Foreign keys with ON DELETE CASCADE</li>
+        <li>Composite indexes for frequent queries</li>
+        <li>BTREE indexes on lookup columns</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🍃 MongoDB (Atlas) — Collections Overview</summary>
+    <div class="details-content">
+      <pre>// Poster System
+premium_plans {
+  user_id: Number,
+  tier: String,
+  expires_at: Date,
+  daily_limit: Number
+}
+
+poster_usage {
+  user_id: Number,
+  date: Date,
+  count: Number,
+  templates: Array
+}
+
+// Engagement Features
+couples {
+  chat_id: Number,
+  date: Date,
+  user1: Object,
+  user2: Object
+}
+
+chatbot_sessions {
+  chat_id: Number,
+  enabled: Boolean,
+  language: String
+}
+
+// Analytics
+user_analytics {
+  user_id: Number,
+  commands_used: Object,
+  last_active: Date,
+  total_requests: Number
+}</pre>
+      <h4>Indexes:</h4>
+      <ul>
+        <li><code>user_id</code> — Single field index</li>
+        <li><code>chat_id</code> — Single field index</li>
+        <li><code>date</code> — TTL index (auto-cleanup)</li>
+        <li><code>expires_at</code> — TTL index</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔄 Data Flow &amp; Synchronization</summary>
+    <div class="details-content">
+      <div class="dataflow">
+        <div class="node">User Request</div>
+        <span class="arrow">↓</span>
+        <div class="node">Bot Handler</div>
+        <span class="arrow">↓</span>
+        <div class="node">Query Router</div>
+        <span class="arrow">↙&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↘</span>
+        <div style="display:flex;justify-content:center;gap:60px;">
+          <div class="node db-node">PostgreSQL</div>
+          <div class="node db-node">MongoDB</div>
+        </div>
+        <span class="arrow">↘&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↙</span>
+        <div class="node">Data Merger</div>
+        <span class="arrow">↓</span>
+        <div class="node">Response</div>
+      </div>
+      <h4>Sync Strategy:</h4>
+      <ul>
+        <li>PostgreSQL: Source of truth for relational data</li>
+        <li>MongoDB: Cache + analytics layer</li>
+        <li>Hourly sync jobs for consistency</li>
+        <li>Event-driven updates for real-time data</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║       PERFORMANCE OPTIMIZATION           ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="performance" class="section">
+  <div class="section-header">
+    <span class="section-icon">📈</span>
+    <div><div class="section-title">Performance Optimization</div></div>
+  </div>
+
+  <details>
+    <summary>⚡ Multi-Layer Cache</summary>
+    <div class="details-content">
+      <h4>In-Memory Cache (Python):</h4>
+      <ul>
+        <li>User data (5-minute TTL)</li>
+        <li>Group settings (10-minute TTL)</li>
+        <li>Channel lists (15-minute TTL)</li>
+        <li>LRU eviction policy</li>
+      </ul>
+      <h4>MongoDB Cache:</h4>
+      <ul>
+        <li>Frequently accessed data</li>
+        <li>Search results (1-hour TTL)</li>
+        <li>Analytics aggregations</li>
+      </ul>
+      <h4>Database Query Optimization:</h4>
+      <ul>
+        <li>Prepared statements · Connection pooling</li>
+        <li>Query result caching · Batch operations</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>📊 Load Handling</summary>
+    <div class="details-content">
+      <h4>Concurrent Processing:</h4>
+      <ul>
+        <li>Asynchronous handlers · Non-blocking I/O</li>
+        <li>Thread pool for heavy tasks · Queue system for broadcasts</li>
+      </ul>
+      <h4>Rate Limiting:</h4>
+      <ul>
+        <li>Per-user command limits · Global throughput control</li>
+        <li>Adaptive throttling · Priority queue for admins</li>
+      </ul>
+      <h4>Resource Management:</h4>
+      <ul>
+        <li>Memory-efficient image processing · Lazy loading for modules</li>
+        <li>Garbage collection tuning · Connection pool optimization</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         USE CASES & EXAMPLES             ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="usecases" class="section">
+  <div class="section-header">
+    <span class="section-icon">🎯</span>
+    <div><div class="section-title">Use Cases &amp; Examples</div></div>
+  </div>
+
+  <details>
+    <summary>📺 Anime Channel Management</summary>
+    <div class="details-content">
+      <p><strong>Scenario:</strong> Running an anime Telegram channel with 10,000+ members</p>
+      <h4>Setup:</h4>
+      <ol class="steps-list">
+        <li>Add channel as force-sub: <code>/addchannel @AnimeChannel</code></li>
+        <li>Configure auto-forward from source channels</li>
+        <li>Set up scheduled broadcasts for new episodes</li>
+        <li>Enable poster generation for releases</li>
+      </ol>
+      <h4>Workflow:</h4>
+      <p>New episode detected → Auto-forward → Poster generated → Broadcast sent<br>Users click link → Forced to join channel → Access content<br>Track analytics → Optimize posting times</p>
+      <h4>Features Used:</h4>
+      <ul>
+        <li>Force-sub system · Auto-forwarding · Poster generation</li>
+        <li>Scheduled broadcasts · User analytics</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>💬 Community Group Management</summary>
+    <div class="details-content">
+      <p><strong>Scenario:</strong> Managing a 5,000-member anime discussion group</p>
+      <h4>Setup:</h4>
+      <ol class="steps-list">
+        <li>Configure welcome message with rules</li>
+        <li>Set up anti-spam filters</li>
+        <li>Enable warning system</li>
+        <li>Configure night mode</li>
+        <li>Set up logging channel</li>
+      </ol>
+      <h4>Daily Operations:</h4>
+      <ul>
+        <li>Auto-welcome new members · Filter spam/inappropriate content</li>
+        <li>Moderate with warns/bans/mutes · Run daily couple feature</li>
+        <li>Track member activity</li>
+      </ul>
+      <h4>Features Used:</h4>
+      <ul>
+        <li>Welcome/goodbye system · Anti-flood protection · Warning system</li>
+        <li>Blacklist filters · Couples feature · Comprehensive logging</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎨 Content Creation</summary>
+    <div class="details-content">
+      <p><strong>Scenario:</strong> Creating promotional posters for anime releases</p>
+      <h4>Setup:</h4>
+      <ol class="steps-list">
+        <li>Grant premium access to content team</li>
+        <li>Configure category settings (watermark, logo)</li>
+        <li>Set up default templates</li>
+      </ol>
+      <h4>Workflow:</h4>
+      <ul>
+        <li><code>/ani Demon Slayer</code> → Professional poster</li>
+        <li><code>/crun Jujutsu Kaisen</code> → Crunchyroll-style poster</li>
+        <li><code>/net One Piece</code> → Netflix-style poster</li>
+        <li>Watermark automatically applied → Share to channel/group</li>
+      </ul>
+      <h4>Features Used:</h4>
+      <ul>
+        <li>12 poster templates · Premium tier system</li>
+        <li>Custom watermarks · Category branding</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║           TROUBLESHOOTING                ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="troubleshooting" class="section">
+  <div class="section-header">
+    <span class="section-icon">🛠️</span>
+    <div><div class="section-title">Troubleshooting</div></div>
+  </div>
+
+  <details>
+    <summary>❌ Common Issues &amp; Solutions</summary>
+    <div class="details-content">
+      <h4>Bot Not Responding:</h4>
+      <pre># Check bot is running
+curl https://your-app.onrender.com/health
+
+# Check Render logs
+# Dashboard → Logs tab
+
+# Verify environment variables
+# Dashboard → Environment tab
+
+# Restart service
+# Dashboard → Manual Deploy → Clear build cache &amp; deploy</pre>
+
+      <h4>Database Connection Errors:</h4>
+      <pre># PostgreSQL: Check connection string format
+postgresql://user:password@host/database?sslmode=require
+
+# MongoDB: Check IP whitelist
+0.0.0.0/0 should be allowed
+
+# Test connections
+python -c "import psycopg2; print('PostgreSQL OK')"
+python -c "import pymongo; print('MongoDB OK')"</pre>
+
+      <h4>Poster Generation Failing:</h4>
+      <pre># Verify fonts directory exists
+ls -la fonts/
+
+# Check iconspng directory
+ls -la iconspng/
+
+# Verify Pillow installation
+pip show Pillow
+
+# Check AniList API access
+curl https://graphql.anilist.co/</pre>
+
+      <h4>Force-Sub Not Working:</h4>
+      <pre># Verify bot is admin in channel
+# Bot needs "Invite users via link" permission
+
+# Check channel ID format
+# Should be: -1001234567890 or @username
+
+# Re-add channel
+/removechannel @channel
+/addchannel @channel Channel Name</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔍 Debug Mode</summary>
+    <div class="details-content">
+      <h4>Enable detailed logging:</h4>
+      <pre>import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)</pre>
+      <h4>Check specific modules:</h4>
+      <pre>/logs antiflood    # Anti-flood logs
+/logs database     # Database query logs
+/logs poster       # Poster generation logs</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>📊 Health Monitoring</summary>
+    <div class="details-content">
+      <h4>Endpoints:</h4>
+      <ul>
+        <li><code>/health</code> — Basic health check</li>
+        <li><code>/stats</code> — Bot statistics</li>
+        <li><code>/metrics</code> — Performance metrics</li>
+      </ul>
+      <h4>Monitoring Checklist:</h4>
+      <ul class="checklist">
+        <li>Bot responding to /start</li>
+        <li>Database connections active</li>
+        <li>Force-sub working</li>
+        <li>Poster generation functional</li>
+        <li>Logs clean (no errors)</li>
+        <li>Memory usage &lt; 512MB</li>
+        <li>Response time &lt; 2s</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         ADVANCED CONFIGURATION           ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="advanced" class="section">
+  <div class="section-header">
+    <span class="section-icon">📚</span>
+    <div><div class="section-title">Advanced Configuration</div></div>
+  </div>
+
+  <details>
+    <summary>⚙️ Module Customization</summary>
+    <div class="details-content">
+      <h4>Disable Specific Modules:</h4>
+      <pre># In bot.py, comment out unwanted modules
+# DISABLED_MODULES = ['chatbot', 'couples', 'games']</pre>
+      <h4>Configure Module Settings:</h4>
+      <pre>/disable chatbot          # Disable in specific chat
+/enable chatbot           # Re-enable
+
+/setflood 10 5 ban       # 10 msgs in 5s = ban
+/setwarnlimit 3          # 3 warns = auto-action
+/setwarnmode ban         # Action: ban (or mute/kick)</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎨 Template Customization</summary>
+    <div class="details-content">
+      <h4>Create Custom Template:</h4>
+      <pre># In poster_engine.py
+TEMPLATES['custom'] = {
+    'gradient': ['#FF0000', '#00FF00'],
+    'accent_color': '#0000FF',
+    'logo_path': 'iconspng/custom_logo.png',
+    'watermark_position': 'bottom-right'
+}</pre>
+      <h4>Per-Category Settings:</h4>
+      <pre>/settings anime
+- Watermark: BeatAnime
+- Logo: anilist_logo.png
+- Template: modern
+- Buttons: [Download, Watch]
+
+/settings manga
+- Watermark: BeatManga
+- Logo: mal_logo.png
+- Template: light
+- Buttons: [Read, Download]</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔐 Advanced Permissions</summary>
+    <div class="details-content">
+      <h4>Disaster Levels:</h4>
+      <pre>Level 10: Owner (full access)
+Level 9:  Co-owner (all except eval/shell)
+Level 8:  Sudo (global moderation)
+Level 7:  Support (limited global access)
+
+/addsudo USER_ID 8      # Add sudo user
+/rmsudo USER_ID         # Remove sudo access
+/sudolist               # List all sudo users</pre>
+      <h4>Per-Command Permissions:</h4>
+      <pre>/disable ban             # Disable /ban in this chat
+/disabled                # List disabled commands
+/enable ban              # Re-enable /ban</pre>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║         ANALYTICS & INSIGHTS             ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="analytics" class="section">
+  <div class="section-header">
+    <span class="section-icon">📊</span>
+    <div><div class="section-title">Analytics &amp; Insights</div></div>
+  </div>
+
+  <details>
+    <summary>📈 Built-in Analytics</summary>
+    <div class="details-content">
+      <h4>User Metrics:</h4>
+      <pre>/stats users             # Total users
+/stats active            # Active today
+/stats new               # New this week
+/stats premium           # Premium users</pre>
+      <h4>Content Metrics:</h4>
+      <pre>/stats posters           # Posters generated
+/stats requests          # Anime requests
+/stats broadcasts        # Broadcasts sent
+/stats templates         # Popular templates</pre>
+      <h4>Group Metrics:</h4>
+      <pre>/stats groups            # Total groups
+/stats messages          # Messages today
+/stats warns             # Warnings issued
+/stats bans              # Bans issued</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>📉 Performance Metrics</summary>
+    <div class="details-content">
+      <h4>System Health:</h4>
+      <ul>
+        <li>Response time tracking · Database query performance</li>
+        <li>Memory usage monitoring · API call rate limiting</li>
+        <li>Error rate tracking</li>
+      </ul>
+      <h4>Export Data:</h4>
+      <pre>/export users            # CSV export
+/export groups           # Group list
+/export analytics        # Full analytics</pre>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║       UPDATE & MAINTENANCE               ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="maintenance" class="section">
+  <div class="section-header">
+    <span class="section-icon">🔄</span>
+    <div><div class="section-title">Update &amp; Maintenance</div></div>
+  </div>
+
+  <details>
+    <summary>🆙 Updating the Bot</summary>
+    <div class="details-content">
+      <pre># Pull latest changes
+git pull origin main
+
+# Check for new dependencies
+pip install -r requirements.txt
+
+# Run database migrations
+python migrate.py
+
+# Restart service
+# On Render: Manual Deploy → Deploy latest commit</pre>
+      <h4>Breaking Changes Checklist:</h4>
+      <ul class="checklist">
+        <li>Review changelog</li>
+        <li>Backup databases</li>
+        <li>Test in development</li>
+        <li>Update environment variables</li>
+        <li>Deploy during low-traffic hours</li>
+        <li>Monitor logs post-deployment</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🗄️ Database Maintenance</summary>
+    <div class="details-content">
+      <h4>Regular Tasks:</h4>
+      <pre>/dbcleanup               # Clean orphaned data
+/vacuum                  # PostgreSQL VACUUM
+/reindex                 # Rebuild indexes</pre>
+      <h4>Backup Strategy:</h4>
+      <pre># PostgreSQL backup (NeonDB has auto-backups)
+pg_dump DATABASE_URL &gt; backup.sql
+
+# MongoDB backup
+mongodump --uri="MONGO_DB_URI" --out=backup/
+
+# Scheduled: Daily auto-backups on both platforms</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔧 Scheduled Maintenance</summary>
+    <div class="details-content">
+      <h4>Daily:</h4>
+      <ul><li>Log rotation · Cache clearing · Analytics aggregation · Usage limit resets</li></ul>
+      <h4>Weekly:</h4>
+      <ul><li>Database cleanup · Expired link removal · Inactive user pruning · Performance optimization</li></ul>
+      <h4>Monthly:</h4>
+      <ul><li>Full database backup · Security audit · Dependency updates · Performance review</li></ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║       CONTRIBUTING & DEVELOPMENT         ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="contributing" class="section">
+  <div class="section-header">
+    <span class="section-icon">🤝</span>
+    <div><div class="section-title">Contributing &amp; Development</div></div>
+  </div>
+
+  <details>
+    <summary>🛠️ Development Setup</summary>
+    <div class="details-content">
+      <pre># Clone repository
+git clone https://github.com/yourusername/BeatAniVerse-v2.git
+cd BeatAniVerse-v2
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Copy environment template
+cp .env.example .env
+# Edit .env with your credentials
+
+# Run locally
+python bot.py</pre>
+      <h4>Development Tools:</h4>
+      <ul>
+        <li>Python 3.11+ · PostgreSQL (local or NeonDB) · MongoDB (local or Atlas)</li>
+        <li>VS Code / PyCharm · Postman (API testing)</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>📝 Code Style Guide</summary>
+    <div class="details-content">
+      <h4>Python Standards:</h4>
+      <ul>
+        <li>PEP 8 compliance · Type hints for functions</li>
+        <li>Docstrings for modules/classes · Maximum line length: 100 characters</li>
+      </ul>
+      <h4>Module Structure:</h4>
+      <pre>"""
+Module description
+
+Author: Your Name
+Created: YYYY-MM-DD
+"""
+
+from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class FeatureName:
+    """Feature description"""
+
+    def __init__(self):
+        """Initialize feature"""
+        pass
+
+    async def handle_command(self, update, context):
+        """Handle user command"""
+        pass</pre>
+    </div>
+  </details>
+
+  <details>
+    <summary>🧪 Testing</summary>
+    <div class="details-content">
+      <pre># Run unit tests
+python -m pytest tests/
+
+# Run integration tests
+python -m pytest tests/integration/
+
+# Test specific module
+python -m pytest tests/test_poster.py
+
+# Coverage report
+pytest --cov=modules tests/</pre>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║           LICENSE & LEGAL                ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="license" class="section">
+  <div class="section-header">
+    <span class="section-icon">📜</span>
+    <div><div class="section-title">License &amp; Legal</div></div>
+  </div>
+
+  <details>
+    <summary>⚖️ License Information</summary>
+    <div class="details-content">
+      <div class="alert alert-red">
+        <span class="alert-icon">🔒</span>
+        <span><strong>Proprietary Software</strong> — © 2025-2026 BeatAnime. All rights reserved.</span>
+      </div>
+      <p>This software is proprietary and confidential. Unauthorized copying, distribution, modification, or use of this software, via any medium, is strictly prohibited without explicit written permission from BeatAnime.</p>
+      <h4>Permitted Use:</h4>
+      <ul>
+        <li>Personal/educational use with attribution</li>
+        <li>Modification for personal instances</li>
+        <li>Study and learning purposes</li>
+      </ul>
+      <h4>Prohibited:</h4>
+      <ul>
+        <li>Commercial use without license</li>
+        <li>Redistribution or resale</li>
+        <li>Removal of credits/attribution</li>
+        <li>Claiming as original work</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🔒 Privacy &amp; Data Protection</summary>
+    <div class="details-content">
+      <h4>Data Collection:</h4>
+      <ul>
+        <li>User IDs (for bot functionality) · Group IDs (for management features)</li>
+        <li>Command usage (for analytics) · Premium status (for tier management)</li>
+      </ul>
+      <h4>Data Storage:</h4>
+      <ul>
+        <li>PostgreSQL: User settings, group configs · MongoDB: Analytics, temporary data</li>
+        <li>No personal messages stored · No media files stored permanently</li>
+      </ul>
+      <h4>Data Retention:</h4>
+      <ul>
+        <li>Active users: Indefinite · Inactive users: 90 days</li>
+        <li>Deleted groups: 30 days · Logs: 7 days</li>
+      </ul>
+      <h4>User Rights:</h4>
+      <ul>
+        <li><code>/exportmydata</code> — Request data export</li>
+        <li><code>/deletemydata</code> — Request data deletion</li>
+        <li><code>/optout</code> — Opt-out of analytics</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║       CREDITS & ACKNOWLEDGMENTS          ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<section id="credits" class="section">
+  <div class="section-header">
+    <span class="section-icon">🙏</span>
+    <div><div class="section-title">Credits &amp; Acknowledgments</div></div>
+  </div>
+
+  <h3>👥 Development Team</h3>
+  <div class="team-grid">
+    <div class="team-card">
+      <img src="https://img.icons8.com/color/96/000000/user.png" alt="Lead">
+      <h4>Project Lead</h4>
+      <a href="https://t.me/Beat_Anime_Ocean">@Beat_Anime_Ocean</a>
+      <small>Architecture &amp; Integration</small>
+    </div>
+    <div class="team-card">
+      <img src="https://img.icons8.com/color/96/000000/code.png" alt="Backend">
+      <h4>Backend Dev</h4>
+      <small>BeatAnime Dev Team</small>
+      <small>Core Bot Logic</small>
+    </div>
+    <div class="team-card">
+      <img src="https://img.icons8.com/color/96/000000/design.png" alt="Design">
+      <h4>Design &amp; UX</h4>
+      <small>BeatAnime Creative</small>
+      <small>Poster Templates</small>
+    </div>
+    <div class="team-card">
+      <img src="https://img.icons8.com/color/96/000000/database.png" alt="Database">
+      <h4>DB Architecture</h4>
+      <small>BeatAnime Data Team</small>
+      <small>DB Design &amp; Optimization</small>
+    </div>
+    <div class="team-card">
+      <img src="https://img.icons8.com/color/96/000000/test-tube.png" alt="QA">
+      <h4>QA &amp; Testing</h4>
+      <small>BeatAnime QA Team</small>
+      <small>Quality Assurance</small>
+    </div>
+  </div>
+
+  <h3>🎯 Core Systems</h3>
+  <div class="core-systems-grid">
+    <div class="core-system">
+      <h4>🔗 Link Provider System</h4>
+      <div class="sub">Original: Beat Anime Link Provider Bot · Credits: BeatAnime Development Team</div>
+      <p><strong>Features Integrated:</strong></p>
+      <ul>
+        <li>Force subscription management · Expiring link generation</li>
+        <li>Clone bot system · Broadcast engine · Auto-forwarding</li>
+        <li>Upload management · Manga chapter tracking · Category settings</li>
+      </ul>
+      <p style="margin-top:12px;"><strong>Technology:</strong></p>
+      <ul>
+        <li>Python-telegram-bot · PostgreSQL (NeonDB)</li>
+        <li>Async/await architecture · RESTful API integration</li>
+      </ul>
+    </div>
+    <div class="core-system">
+      <h4>🎨 Poster Generation Engine</h4>
+      <div class="sub">Original: Postermaking Bot · Credits: BeatAnime Creative Team</div>
+      <p><strong>Features Integrated:</strong></p>
+      <ul>
+        <li>12 professional templates · 6-layer composition engine</li>
+        <li>AniList API integration · MyAnimeList support</li>
+        <li>Premium tier system · Custom watermarking · Dynamic branding</li>
+      </ul>
+      <p style="margin-top:12px;"><strong>Technology:</strong></p>
+      <ul>
+        <li>Pillow (PIL Fork) · Python Imaging · GraphQL (AniList)</li>
+        <li>REST API (MAL) · MongoDB caching</li>
+      </ul>
+    </div>
+    <div class="core-system">
+      <h4>🤖 Group Management System</h4>
+      <div class="sub">Original: BeatVerse Bot · Credits: BeatAnime Moderation Team</div>
+      <p><strong>Features Integrated:</strong></p>
+      <ul>
+        <li>77 modular features · Advanced admin tools · Anti-spam/flood</li>
+        <li>Welcome/goodbye · Warning system · Custom filters</li>
+        <li>Comprehensive logging</li>
+      </ul>
+      <p style="margin-top:12px;"><strong>Technology:</strong></p>
+      <ul>
+        <li>SQLAlchemy ORM · PostgreSQL</li>
+        <li>Multi-threaded processing · Event-driven architecture</li>
+      </ul>
+    </div>
+  </div>
+
+  <details>
+    <summary>🔧 Core Technologies &amp; Libraries</summary>
+    <div class="details-content">
+      <h4>Backend Framework:</h4>
+      <ul>
+        <li><strong>Python 3.11+</strong> — Core programming language</li>
+        <li><strong>python-telegram-bot 20+</strong> — Telegram Bot API wrapper</li>
+        <li><strong>asyncio</strong> — Asynchronous I/O operations</li>
+        <li><strong>aiohttp</strong> — Async HTTP client/server</li>
+      </ul>
+      <h4>Database Systems:</h4>
+      <ul>
+        <li><strong>PostgreSQL</strong> — Relational data storage (via NeonDB)</li>
+        <li><strong>MongoDB</strong> — Document store &amp; analytics (via Atlas)</li>
+        <li><strong>SQLAlchemy</strong> — Python SQL toolkit and ORM</li>
+        <li><strong>PyMongo</strong> — MongoDB driver for Python</li>
+      </ul>
+      <h4>Image Processing:</h4>
+      <ul>
+        <li><strong>Pillow (PIL Fork)</strong> — Image manipulation</li>
+        <li><strong>Wand</strong> — ImageMagick binding</li>
+        <li><strong>Cairo</strong> — 2D graphics library</li>
+        <li><strong>OpenCV</strong> — Computer vision (optional)</li>
+      </ul>
+      <h4>API Integrations:</h4>
+      <ul>
+        <li><strong>AniList GraphQL API</strong> — Anime/manga data</li>
+        <li><strong>MyAnimeList API</strong> — Alternative anime data</li>
+        <li><strong>TMDB API</strong> — Movie/TV show information</li>
+        <li><strong>MangaDex API</strong> — Manga chapter tracking</li>
+        <li><strong>Jikan API</strong> — Unofficial MAL API</li>
+      </ul>
+      <h4>Utilities:</h4>
+      <ul>
+        <li><strong>python-dotenv</strong> — Environment management</li>
+        <li><strong>requests</strong> — HTTP library</li>
+        <li><strong>BeautifulSoup4</strong> — HTML parsing</li>
+        <li><strong>lxml</strong> — XML/HTML parser</li>
+        <li><strong>cachetools</strong> — Caching utilities</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🎨 Design &amp; Assets</summary>
+    <div class="details-content">
+      <h4>Fonts:</h4>
+      <ul>
+        <li><strong>Poppins</strong> — Primary UI font (SIL Open Font License)</li>
+        <li><strong>Bebas Neue</strong> — Display headers (SIL Open Font License)</li>
+        <li><strong>Roboto</strong> — Body text (Apache License 2.0)</li>
+        <li><strong>Noto Sans</strong> — Unicode support (SIL Open Font License)</li>
+      </ul>
+      <h4>Icons &amp; Logos:</h4>
+      <ul>
+        <li><strong>Netflix Logo</strong> — Educational use only</li>
+        <li><strong>Crunchyroll Logo</strong> — Educational use only</li>
+        <li><strong>AniList Logo</strong> — Used with permission</li>
+        <li><strong>MyAnimeList Logo</strong> — Educational use only</li>
+        <li>Custom icons designed by BeatAnime team</li>
+      </ul>
+      <h4>Design Tools:</h4>
+      <ul>
+        <li>Figma (UI/UX design) · Adobe Photoshop (asset creation) · Canva (template design)</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🌐 Hosting &amp; Infrastructure</summary>
+    <div class="details-content">
+      <h4>Deployment Platform:</h4>
+      <ul>
+        <li><strong>Render</strong> — Web service hosting (Free tier)</li>
+        <li><strong>Docker</strong> — Containerization</li>
+        <li><strong>GitHub Actions</strong> — CI/CD pipeline (optional)</li>
+      </ul>
+      <h4>Database Hosting:</h4>
+      <ul>
+        <li><strong>NeonDB</strong> — Serverless PostgreSQL (Free tier)</li>
+        <li><strong>MongoDB Atlas</strong> — Cloud MongoDB (Free tier)</li>
+      </ul>
+      <h4>Monitoring Services:</h4>
+      <ul>
+        <li><strong>UptimeRobot</strong> — Uptime monitoring (Free tier)</li>
+        <li><strong>Better Uptime</strong> — Alternative monitoring</li>
+        <li><strong>Sentry</strong> — Error tracking (optional)</li>
+      </ul>
+      <h4>CDN &amp; Storage:</h4>
+      <ul>
+        <li><strong>Telegram CDN</strong> — File storage via Telegram</li>
+        <li><strong>ImgBB</strong> — Image hosting (optional)</li>
+        <li><strong>Telegraph</strong> — Content publishing</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🛠️ Development Tools</summary>
+    <div class="details-content">
+      <h4>IDEs &amp; Editors:</h4>
+      <ul>
+        <li>Visual Studio Code · PyCharm Professional · Sublime Text</li>
+      </ul>
+      <h4>Version Control:</h4>
+      <ul>
+        <li>Git · GitHub</li>
+      </ul>
+      <h4>Testing &amp; QA:</h4>
+      <ul>
+        <li><strong>pytest</strong> — Testing framework</li>
+        <li><strong>pytest-cov</strong> — Coverage reporting</li>
+        <li><strong>pytest-asyncio</strong> — Async testing</li>
+        <li><strong>Postman</strong> — API testing</li>
+      </ul>
+      <h4>Documentation:</h4>
+      <ul>
+        <li><strong>Markdown</strong> — README &amp; docs</li>
+        <li><strong>Sphinx</strong> — API documentation</li>
+        <li><strong>MkDocs</strong> — Documentation site</li>
+      </ul>
+    </div>
+  </details>
+
+  <h3>🌟 Special Thanks</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;margin:16px 0;">
+    <div class="attribution-box">
+      <h4>Community Contributors</h4>
+      <ul>
+        <li>Beta testers from @Beat_Anime_Discussion</li>
+        <li>Feature suggestion contributors</li>
+        <li>Bug reporters and debuggers</li>
+        <li>Documentation improvement contributors</li>
+        <li>Translation volunteers</li>
+      </ul>
+    </div>
+    <div class="attribution-box">
+      <h4>Open Source Projects</h4>
+      <ul>
+        <li>Python Software Foundation</li>
+        <li>python-telegram-bot maintainers</li>
+        <li>PostgreSQL Development Team</li>
+        <li>MongoDB Inc. · Pillow contributors</li>
+        <li>All library authors and maintainers</li>
+      </ul>
+    </div>
+    <div class="attribution-box">
+      <h4>API Providers</h4>
+      <ul>
+        <li>AniList for comprehensive anime database</li>
+        <li>MyAnimeList for anime/manga data</li>
+        <li>TMDB for movie/TV information</li>
+        <li>MangaDex for manga chapters</li>
+        <li>Jikan API developers</li>
+      </ul>
+    </div>
+    <div class="attribution-box">
+      <h4>Platform Providers</h4>
+      <ul>
+        <li>Telegram for the Bot API</li>
+        <li>Render for hosting services</li>
+        <li>NeonDB for PostgreSQL hosting</li>
+        <li>MongoDB Atlas for database hosting</li>
+        <li>GitHub for code repository</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>📢 Official Channels</h3>
+  <div class="support-grid">
+    <div class="support-card">
+      <img src="https://img.icons8.com/color/96/000000/telegram-app.png" alt="Telegram">
+      <h4>Main Channel</h4>
+      <a href="https://t.me/BeatAnime">@BeatAnime</a>
+      <small>Updates &amp; Announcements</small>
+    </div>
+    <div class="support-card">
+      <img src="https://img.icons8.com/color/96/000000/communication.png" alt="Discussion">
+      <h4>Discussion Group</h4>
+      <a href="https://t.me/Beat_Anime_Discussion">@Beat_Anime_Discussion</a>
+      <small>Community Support</small>
+    </div>
+    <div class="support-card">
+      <img src="https://img.icons8.com/color/96/000000/hindi.png" alt="Hindi">
+      <h4>Hindi Dubbed</h4>
+      <a href="https://t.me/Beat_Hindi_Dubbed">@Beat_Hindi_Dubbed</a>
+      <small>Hindi Content</small>
+    </div>
+    <div class="support-card">
+      <img src="https://img.icons8.com/color/96/000000/administrator-male.png" alt="Admin">
+      <h4>Admin Contact</h4>
+      <a href="https://t.me/Beat_Anime_Ocean">@Beat_Anime_Ocean</a>
+      <small>Direct Support</small>
+    </div>
+  </div>
+
+  <h3>📜 Attribution Requirements</h3>
+  <p>If you use, modify, or reference this project, please provide attribution:</p>
+  <pre>Bot powered by BeatAniVerse
+Original: @BeatAnime
+Repository: [Your Repository URL]</pre>
+  <h4>Required Attribution Elements:</h4>
+  <ul>
+    <li>Credit to BeatAnime · Link to @BeatAnime channel</li>
+    <li>Link to original repository · Preservation of copyright notices</li>
+  </ul>
+
+  <h3>🎖️ Project Milestones</h3>
+
+  <details>
+    <summary>📅 Development Timeline</summary>
+    <div class="details-content">
+      <ul class="timeline">
+        <li><strong>2024 Q4</strong>Initial concept and planning · Link Provider Bot development · Poster Engine prototype</li>
+        <li><strong>2025 Q1</strong>BeatVerse Bot integration · Database architecture design · Alpha testing phase</li>
+        <li><strong>2025 Q2</strong>Beta release to community · Bug fixes and optimization · Feature expansion</li>
+        <li><strong>2025 Q3</strong>Public release (v1.0) · Documentation completion · Community growth</li>
+        <li><strong>2026 Q1</strong>Current version (v2.0) · Enhanced features · Production stability</li>
+      </ul>
+    </div>
+  </details>
+
+  <details>
+    <summary>🏆 Achievements</summary>
+    <div class="details-content">
+      <ul class="achieve-list">
+        <li>10,000+ active users</li>
+        <li>500+ managed groups</li>
+        <li>50,000+ posters generated</li>
+        <li>99.9% uptime record</li>
+        <li>24/7 support availability</li>
+        <li>Zero data breaches</li>
+        <li>Community-driven development</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<div class="sep">☣ ☣ ☣</div>
+
+<!-- ╔══════════════════════════════════════════╗ -->
+<!-- ║              FOOTER                      ║ -->
+<!-- ╚══════════════════════════════════════════╝ -->
+<footer>
+  <div class="footer-logo">BEATANIVERSE</div>
+  <div class="footer-sub">Complete All-in-One Telegram Bot Solution</div>
+
+  <p style="font-family:var(--font-ui);font-size:15px;font-weight:300;color:var(--text);max-width:560px;margin:0 auto 24px;line-height:1.7;">
+    <strong>BeatAniVerse</strong> is a passion project maintained by the BeatAnime team.
+    Your support helps us continue development and keep services free for everyone.
+  </p>
+
+  <p style="font-family:var(--font-display);font-size:18px;letter-spacing:4px;color:var(--text-dim);margin-bottom:20px;">WAYS TO SUPPORT</p>
+  <p style="font-family:var(--font-ui);font-size:14px;color:var(--text-dim);font-weight:300;margin-bottom:24px;">
+    ⭐ Star the repository &nbsp;·&nbsp;
+    🔄 Share with friends &nbsp;·&nbsp;
+    📢 Join our channels &nbsp;·&nbsp;
+    🐛 Report bugs &nbsp;·&nbsp;
+    💡 Suggest features &nbsp;·&nbsp;
+    📝 Improve documentation &nbsp;·&nbsp;
+    🤝 Contribute code
+  </p>
+
+  <div class="footer-badges">
+    <a href="https://t.me/BeatAnime"><img src="https://img.shields.io/badge/Telegram-Join%20Us-blue?style=for-the-badge&logo=telegram" alt="Join Telegram"></a>
+    <img src="https://img.shields.io/badge/Made%20with-Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Made with Python">
+    <img src="https://img.shields.io/badge/Status-Production-success?style=for-the-badge" alt="Status">
+  </div>
+
+  <div class="footer-copy">
+    <p>© <span class="red">2025–2026 BeatAnime</span>. All Rights Reserved. · Proprietary Software.</p>
+    <p style="margin-top:6px;">BeatAnime, BeatAniVerse, and associated logos are trademarks of BeatAnime.<br>Netflix, Crunchyroll, AniList, MyAnimeList are trademarks of their respective owners.<br>This project is not affiliated with or endorsed by these companies.</p>
+    <p style="margin-top:12px;color:var(--gray-light);">Last Updated: March 2026 &nbsp;·&nbsp; Version: 2.0.0 &nbsp;·&nbsp; Documentation: Complete</p>
+    <p style="margin-top:8px;color:var(--red);font-family:var(--font-display);font-size:14px;letter-spacing:3px;">BUILT WITH ❤️ BY THE BEATANIME TEAM</p>
+  </div>
+</footer>
+
+</body>
+</html>
