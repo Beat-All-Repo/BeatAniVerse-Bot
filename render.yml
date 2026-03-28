@@ -1,0 +1,97 @@
+services:
+  - type: web
+    name: beataniversebot
+    runtime: docker
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "10000"
+      # ── Required ────────────────────────────────────────────────────────────
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      # ── Database (set at least one) ──────────────────────────────────────────
+      - key: DATABASE_URL
+        sync: false
+      - key: MONGO_DB_URI
+        sync: false
+      # ── Branding ────────────────────────────────────────────────────────────
+      - key: BOT_NAME
+        value: "BeatAniVerse Bot"
+      - key: PUBLIC_ANIME_CHANNEL_URL
+        value: "https://t.me/BeatAnime"
+      - key: REQUEST_CHANNEL_URL
+        value: "https://t.me/Beat_Hindi_Dubbed"
+      - key: ADMIN_CONTACT_USERNAME
+        value: "Beat_Anime_Ocean"
+      # ── Help page (what users see on /help) ──────────────────────────────────
+      # Set HELP_TEXT_CUSTOM to override the default help message for users.
+      # Use HTML: <b>bold</b> <i>italic</i> <code>code</code>
+      - key: HELP_TEXT_CUSTOM
+        sync: false
+      - key: HELP_CHANNEL_1_URL
+        sync: false
+      - key: HELP_CHANNEL_1_NAME
+        value: "📢 Anime Channel"
+      - key: HELP_CHANNEL_2_URL
+        sync: false
+      - key: HELP_CHANNEL_2_NAME
+        value: "💬 Discussion"
+      - key: HELP_CHANNEL_3_URL
+        sync: false
+      - key: HELP_CHANNEL_3_NAME
+        value: "🎬 Requests"
+      # ── Optional API keys ───────────────────────────────────────────────────
+      - key: TMDB_API_KEY
+        sync: false
+      # ── Link provider ───────────────────────────────────────────────────────
+      - key: LINK_EXPIRY_MINUTES
+        value: "5"
+      - key: WELCOME_SOURCE_CHANNEL
+        sync: false
+      - key: WELCOME_SOURCE_MESSAGE_ID
+        sync: false
+      - key: WELCOME_IMAGE_URL
+        sync: false
+      - key: HELP_IMAGE_URL
+        sync: false
+      - key: ADMIN_PANEL_IMAGE_URL
+        sync: false
+      - key: STATS_IMAGE_URL
+        sync: false
+      - key: TRANSITION_STICKER
+        sync: false
+      # ── Misc ────────────────────────────────────────────────────────────────
+      # ── Poster cache channel ────────────────────────────────────────────────
+      # The bot must be admin in this channel. Paste the channel ID (e.g. -1001234567890)
+      - key: POSTER_DB_CHANNEL
+        sync: false
+
+      # ── Panel Images ──────────────────────────────────────────────────────────
+      - key: WALL_API_KEY
+        sync: false
+
+      # ── Button & link text (editable from admin panel too) ──────────────────
+      - key: JOIN_BTN_TEXT
+        value: "Join Now"
+      - key: HERE_IS_LINK_TEXT
+        value: "ʜᴇʀᴇ ɪs ʏᴏᴜʀ ʟɪɴᴋ!"
+      - key: ANIME_BTN_TEXT
+        value: "Anime Channel"
+      - key: REQUEST_BTN_TEXT
+        value: "Request Anime"
+      - key: CONTACT_BTN_TEXT
+        value: "Contact Admin"
+      - key: FORCE_SUB_TEXT
+        value: "Please join our channels to continue:"
+      - key: BUTTON_STYLE
+        value: "mathbold"
+
+      - key: WEB_CONCURRENCY
+        value: "1"
