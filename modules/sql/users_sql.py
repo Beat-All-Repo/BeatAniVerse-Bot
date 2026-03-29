@@ -44,9 +44,14 @@ class Chats(BASE):
 
 class ChatMembers(BASE):
     __tablename__ = "chat_members"
-    __table_args__ = {"extend_existing": True}
+    # FIXED: Both extend_existing AND UniqueConstraint must be in the SAME __table_args__ tuple.
+    # Having two __table_args__ definitions means the second one silently overwrites the first,
+    # dropping extend_existing=True and causing "Table already defined" errors on reload.
+    __table_args__ = (
+        UniqueConstraint("chat", "user", name="_chat_members_uc"),
+        {"extend_existing": True},
+    )
     priv_chat_id = Column(BigInteger, primary_key=True)
-    # NOTE: Use dual primary key instead of private primary key?
     chat = Column(
         String(14),
         ForeignKey("chats.chat_id", onupdate="CASCADE", ondelete="CASCADE"),
@@ -57,7 +62,6 @@ class ChatMembers(BASE):
         ForeignKey("users.user_id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )
-    __table_args__ = (UniqueConstraint("chat", "user", name="_chat_members_uc"),)
 
     def __init__(self, chat, user):
         self.chat = chat
