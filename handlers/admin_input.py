@@ -70,7 +70,7 @@ async def handle_admin_message(
                 and getattr(update.message.forward_origin, "chat", None))
         )
         if _fwd_src:
-            from handlers.misc_cmds import handle_admin_photo
+            from handlers.admin_photo import handle_admin_photo
             await handle_admin_photo(update, context)
             return
 
