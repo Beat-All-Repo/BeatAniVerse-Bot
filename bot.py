@@ -280,7 +280,8 @@ def _register_all_handlers(app: Application) -> None:
     # ── Message handlers ──────────────────────────────────────────────────────
     from handlers.admin_input import handle_admin_message
     from handlers.group import group_message_handler
-    from handlers.upload import handle_upload_video, handle_channel_post, handle_admin_photo
+    from handlers.upload import handle_upload_video, handle_channel_post
+    from handlers.admin_photo import handle_admin_photo
     from handlers.channels import auto_approve_join_request, channel_welcome_join_handler
     from handlers.autoforward import auto_forward_message_handler
     from handlers.clean_gc import _clean_gc_service_handler, _clean_gc_command_handler
@@ -412,7 +413,11 @@ def main() -> None:
             except Exception:
                 pass
 
+        @property
         def bot(self):
+            # MUST be a @property — without it, dispatcher.bot returns the bound
+            # method (a function), and modules calling dispatcher.bot.id crash with
+            # "'function' object has no attribute 'id'" (kills admin, afk, bans etc.)
             return self._app.bot
 
     _bridge = _AppDispatcherBridge(application)
