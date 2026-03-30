@@ -161,10 +161,12 @@ async def safe_send_message(
     parse_mode: str = ParseMode.HTML,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     disable_web_page_preview: bool = True,
+    no_auto_delete: bool = False,
 ) -> Optional[Any]:
-    """Send a message safely with proper error handling."""
+    """Send a message safely with proper error handling. Auto-deletes non-poster messages."""
+    sent = None
     try:
-        return await bot.send_message(
+        sent = await bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode=parse_mode,
@@ -174,7 +176,7 @@ async def safe_send_message(
     except RetryAfter as exc:
         await asyncio.sleep(exc.retry_after + 1)
         try:
-            return await bot.send_message(
+            sent = await bot.send_message(
                 chat_id=chat_id, text=text, parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
@@ -184,33 +186,24 @@ async def safe_send_message(
         logger.debug(f"safe_send_message failed to {chat_id}: {exc}")
         return None
 
+    # Auto-delete text messages (photos are handled separately via safe_send_photo)
+    if sent and not no_auto_delete:
+        try:
+            from core.auto_delete import schedule_delete_msg
+            asyncio.create_task(schedule_delete_msg(bot, sent))
+        except Exception:
+            pass
+
+    return sent
+
 
 async def gc_auto_delete(bot: Bot, chat_id: int, msg: Any, delay: int = None) -> None:
-    """Schedule auto-deletion of a bot message in a group chat."""
+    """Schedule auto-deletion of a bot message — now routes through unified auto_delete module."""
     try:
         if not msg:
             return
-        if str(chat_id).startswith("-"):
-            if delay is None:
-                try:
-                    from database_dual import get_setting
-                    delay = int(get_setting("auto_delete_delay", "60"))
-                except Exception:
-                    delay = 60
-            try:
-                from database_dual import get_setting
-                if get_setting("auto_delete_messages", "true") != "true":
-                    return
-            except Exception:
-                pass
-
-            async def _do_delete():
-                await asyncio.sleep(delay)
-                try:
-                    await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
-                except Exception:
-                    pass
-            asyncio.create_task(_do_delete())
+        from core.auto_delete import schedule_delete_msg
+        await schedule_delete_msg(bot, msg, delay=delay)
     except Exception:
         pass
 
@@ -263,27 +256,39 @@ async def safe_reply(
     parse_mode: str = ParseMode.HTML,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
     disable_web_page_preview: bool = True,
+    no_auto_delete: bool = False,
 ) -> Optional[Any]:
-    """Reply to a message or callback query safely."""
+    """Reply to a message or callback query safely. Auto-schedules deletion."""
+    sent = None
     try:
         if update.message:
-            return await update.message.reply_text(
+            sent = await update.message.reply_text(
                 text, parse_mode=parse_mode, reply_markup=reply_markup,
                 disable_web_page_preview=disable_web_page_preview,
             )
         elif update.callback_query and update.callback_query.message:
-            return await update.callback_query.message.reply_text(
+            sent = await update.callback_query.message.reply_text(
                 text, parse_mode=parse_mode, reply_markup=reply_markup,
                 disable_web_page_preview=disable_web_page_preview,
             )
         elif update.effective_chat:
             bot = update._bot
-            return await safe_send_message(
+            sent = await safe_send_message(
                 bot, update.effective_chat.id, text, parse_mode, reply_markup
             )
     except Exception as exc:
         logger.debug(f"safe_reply failed: {exc}")
-    return None
+
+    # Schedule auto-delete for non-poster, non-admin messages
+    if sent and not no_auto_delete:
+        try:
+            from core.auto_delete import schedule_delete_msg
+            import asyncio as _asyncio
+            _asyncio.create_task(schedule_delete_msg(update._bot, sent))
+        except Exception:
+            pass
+
+    return sent
 
 
 async def safe_send_photo(
