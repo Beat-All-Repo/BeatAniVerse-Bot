@@ -420,6 +420,11 @@ TEMPLATES = {
     "lightm":{"bg": (255, 252, 238),"accent": (200, 95, 0),  "text": (35, 20, 5),    "logo": None},
     "darkm": {"bg": (8, 5, 16),    "accent": (175, 60, 255), "text": (240, 228, 255), "logo": None},
     "modm":  {"bg": (4, 8, 20),    "accent": (0, 160, 230),  "text": (225, 245, 255), "logo": None},
+    # Reference-image templates (distinct layouts, not just colour changes)
+    "stream": {"bg": (8, 10, 22),  "accent": (229, 9, 20),   "text": (255, 255, 255), "logo": None},  # Img1 Netflix-style
+    "vessel": {"bg": (12, 14, 30), "accent": (50, 100, 220), "text": (240, 245, 255), "logo": None},  # Img2 Split minimal
+    "splash": {"bg": (5, 5, 8),    "accent": (200, 180, 255),"text": (255, 255, 255), "logo": None},  # Img3 Full-bleed cinematic
+    "od3n":   {"bg": (12, 12, 14), "accent": (220, 190, 60), "text": (220, 222, 228), "logo": None},  # Img4 Character-center
 }
 
 # ── LAYERED POSTER GENERATION ──────────────────────────────────────────────────
@@ -450,6 +455,22 @@ def _make_poster(
     if not PIL_OK:
         return None
 
+    # ── Route to distinct layout functions for reference-image templates ──────
+    _branding = watermark_text or ""
+    if template == "stream":
+        return _make_stream(title, native_title, status, info_rows, desc,
+                            cover_url, score, watermark_text, _branding)
+    if template == "vessel":
+        return _make_vessel(title, native_title, status, info_rows, desc,
+                            cover_url, score, watermark_text, _branding)
+    if template == "splash":
+        return _make_splash(title, native_title, status, info_rows, desc,
+                            cover_url, score, watermark_text, _branding)
+    if template == "od3n":
+        return _make_od3n(title, native_title, status, info_rows, desc,
+                          cover_url, score, watermark_text, _branding)
+
+    # ── Original palette-based layout (all other templates) ──────────────────
     t = TEMPLATES.get(template, TEMPLATES["ani"])
     bg_rgb  = t["bg"]
     acc_rgb = t["accent"]
@@ -610,8 +631,8 @@ def _make_poster(
             except Exception:
                 pass
 
-    # ── Layer 13: Secondary watermark (if different from branding) ────────────
-    if watermark_text and watermark_text != brand:
+    # ── Layer 13: Watermark overlay (always applied when set) ────────────────
+    if watermark_text:
         _apply_watermark(img, draw, watermark_text, watermark_pos, txt_rgb)
 
     # ── Export ────────────────────────────────────────────────────────────────
@@ -623,182 +644,574 @@ def _make_poster(
 
 
 
-    if not PIL_OK:
-        return None
-
-    t = TEMPLATES.get(template, TEMPLATES["ani"])
-    bg_rgb = t["bg"]
-    acc_rgb = t["accent"]
-    txt_rgb = t["text"]
-    is_light = sum(bg_rgb) > 400  # Light themes have bright BG
-
-    # ─── Layer 0: Gradient background ────────────────────────────────────────
-    img = Image.new("RGBA", (W, H), (*bg_rgb, 255))
-    draw = ImageDraw.Draw(img)
-    for i in range(H):
-        ratio = i / H
-        r = max(0, min(255, int(bg_rgb[0] + (acc_rgb[0] - bg_rgb[0]) * ratio * 0.18)))
-        g = max(0, min(255, int(bg_rgb[1] + (acc_rgb[1] - bg_rgb[1]) * ratio * 0.18)))
-        b = max(0, min(255, int(bg_rgb[2] + (acc_rgb[2] - bg_rgb[2]) * ratio * 0.18)))
-        draw.line([(0, i), (W, i)], fill=(r, g, b, 255))
-
-    # ─── Layer 1: Blurred cover background (full bleed) ──────────────────────
+def _make_stream(
+    title, native_title, status, info_rows, desc,
+    cover_url, score, watermark_text, branding,
+):
+    """
+    Layout (1280×720):
+      Full-bleed blurred cover BG · dark overlay
+      LEFT : accent bar │ genre tags │ BIG TITLE │ description │ DOWNLOAD + WATCH NOW
+      RIGHT: cover art with left-fade gradient
+      TOP-RIGHT : branding badge (dark pill)
+      BTM-RIGHT : episode/season/duration card + small thumbnail
+    """
+    img = Image.new("RGBA", (W, H), (8, 10, 22, 255))
     cover_raw = _dl(cover_url)
+
+    # Blurred BG
     if cover_raw:
         try:
-            bg_cover = cover_raw.copy().resize((W, H), Image.LANCZOS)
-            bg_cover = bg_cover.filter(ImageFilter.GaussianBlur(radius=22))
-            # Darken overlay so text is always readable
-            darken = Image.new("RGBA", (W, H), (*bg_rgb, 185))
-            img = Image.alpha_composite(
-                Image.alpha_composite(img, bg_cover.convert("RGBA")),
-                darken,
-            )
+            bg = cover_raw.copy().resize((W, H), Image.LANCZOS)
+            bg = bg.filter(ImageFilter.GaussianBlur(36))
+            img = Image.alpha_composite(img, bg.convert("RGBA"))
+            img = Image.alpha_composite(img, Image.new("RGBA", (W, H), (5, 8, 20, 195)))
+        except Exception:
+            pass
+
+    draw = ImageDraw.Draw(img)
+
+    # Cover art right side with left-fade
+    RS = 620
+    if cover_raw:
+        try:
+            cw, ch = cover_raw.size
+            scale = max((W - RS) / cw, H / ch)
+            cov = cover_raw.copy().resize((int(cw * scale), int(ch * scale)), Image.LANCZOS)
+            lft = (cov.width  - (W - RS)) // 2
+            top = (cov.height - H)         // 2
+            cov = cov.crop((lft, top, lft + W - RS, top + H))
+            mask = Image.new("L", (W - RS, H), 255)
+            md = ImageDraw.Draw(mask)
+            for x in range(300):
+                md.line([(x, 0), (x, H)], fill=int(255 * (x / 300)))
+            img.paste(cov.convert("RGBA"), (RS, 0), mask)
             draw = ImageDraw.Draw(img)
         except Exception:
             pass
 
-    # ─── Layer 2: Cover art (rounded, shadowed) ───────────────────────────────
-    COVER_X, COVER_Y, COVER_W, COVER_H = 50, 70, 310, 435
-    if cover_raw:
-        try:
-            cover = cover_raw.copy().resize((COVER_W, COVER_H), Image.LANCZOS)
-            # Shadow
-            shadow_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-            sd = ImageDraw.Draw(shadow_layer)
-            sd.rounded_rectangle(
-                [(COVER_X + 8, COVER_Y + 8),
-                 (COVER_X + COVER_W + 8, COVER_Y + COVER_H + 8)],
-                radius=16, fill=(0, 0, 0, 100),
-            )
-            img = Image.alpha_composite(img, shadow_layer)
-            draw = ImageDraw.Draw(img)
-            # Rounded cover
-            mask = Image.new("L", cover.size, 0)
-            ImageDraw.Draw(mask).rounded_rectangle(
-                [(0, 0), cover.size], radius=16, fill=255
-            )
-            img.paste(cover, (COVER_X, COVER_Y), mask)
-            draw = ImageDraw.Draw(img)
-        except Exception:
-            # Fallback placeholder
-            draw.rounded_rectangle(
-                [(COVER_X, COVER_Y), (COVER_X + COVER_W, COVER_Y + COVER_H)],
-                radius=16, fill=(*acc_rgb, 60),
-            )
-            draw.text((COVER_X + COVER_W // 2, COVER_Y + COVER_H // 2),
-                      "No Image", fill=(*txt_rgb, 130),
-                      font=_font("poppins-regular", 20), anchor="mm")
+    # Left accent bar
+    draw.rectangle([(0, 0), (5, H)], fill=(229, 9, 20, 255))
 
-    # ─── Layer 3: Score badge (top-right) ────────────────────────────────────
-    if score and str(score) not in ("?", "None", "0"):
-        try:
-            _score_badge(draw, W - 55, 115, f"{score}%", acc_rgb)
-        except Exception:
-            pass
+    # Genre tags
+    genres = next((v for lb, v in info_rows if lb in ("Genres", "Genre")), "")
+    if genres:
+        tags = [g.strip() for g in genres.split(",")[:4]]
+        draw.text(
+            (62, 74), "  •  ".join(tags),
+            fill=(185, 185, 185, 220), font=_font("poppins-regular", 22),
+        )
 
-    # ─── Layer 4a: Accent bar (left edge) ────────────────────────────────────
-    draw.rectangle([(0, 0), (6, H)], fill=(*acc_rgb, 255))
-
-    # ─── Layer 4b: Thin horizontal separator under cover ─────────────────────
-    sep_y = COVER_Y + COVER_H + 22
-    draw.line([(50, sep_y), (W - 50, sep_y)], fill=(*acc_rgb, 200), width=2)
-
-    # ─── Layer 5: Text — Title block ─────────────────────────────────────────
-    ty = sep_y + 18
-
-    # Main title (wraps if long)
-    title_lines = _wrap(title, 32)
-    for ln in title_lines[:2]:
-        draw.text((50, ty), ln, fill=(*txt_rgb, 255),
-                  font=_font("poppins-bold", 34))
-        ty += 42
-    ty += 4
+    # Big title
+    ty = 126
+    for ln in _wrap(title.upper(), 17)[:3]:
+        draw.text((58, ty), ln, fill=(255, 255, 255, 255),
+                  font=_font("bebas-neue-bold", 96))
+        ty += 104
+    ty += 6
 
     # Native title
     if native_title and native_title != title:
-        draw.text((50, ty), native_title[:40], fill=(*acc_rgb, 210),
+        draw.text((62, ty), native_title[:38],
+                  fill=(160, 180, 220, 200), font=_font("poppins-regular", 22))
+        ty += 34
+
+    # Description
+    for ln in _wrap(desc, 50)[:3]:
+        draw.text((62, ty), ln, fill=(200, 205, 215, 215),
+                  font=_font("poppins-regular", 20))
+        ty += 28
+    ty += 18
+
+    # Buttons
+    bty = min(ty, H - 82)
+    BH = 50
+    draw.rectangle([(60, bty), (255, bty + BH)], outline=(255, 255, 255, 230), width=2)
+    draw.text((157, bty + BH // 2), "DOWNLOAD",
+              fill=(255, 255, 255), font=_font("poppins-bold", 16), anchor="mm")
+    draw.rectangle([(275, bty), (476, bty + BH)], fill=(229, 9, 20, 255))
+    draw.text((375, bty + BH // 2), "WATCH NOW",
+              fill=(255, 255, 255), font=_font("poppins-bold", 16), anchor="mm")
+
+    # Top-right branding badge
+    brand = watermark_text or branding or "@BeatAnime"
+    try:
+        bw = draw.textbbox((0, 0), brand, font=_font("poppins-bold", 20))[2]
+    except Exception:
+        bw = len(brand) * 12
+    bx = W - 16
+    draw.rounded_rectangle([(bx - bw - 38, 12), (bx, 54)],
+                            radius=6, fill=(5, 5, 15, 210))
+    draw.line([(bx - bw - 40, 12), (bx - bw - 40, 54)],
+              fill=(229, 9, 20, 255), width=4)
+    draw.text((bx - 10, 33), brand, fill=(255, 255, 255),
+              font=_font("poppins-bold", 20), anchor="rm")
+
+    # Bottom-right info card
+    ep_val  = next((v for lb, v in info_rows if "Episode" in lb), "N/A")
+    sea_val = next((v for lb, v in info_rows if "Season"  in lb), "01")
+    dur_val = next((v for lb, v in info_rows if lb in ("Duration", "Runtime")), "23m")
+    sc_val  = str(score) if score and str(score) not in ("?", "None", "0") else "N/A"
+
+    CX, CY, CRW, CRH = RS + 10, H - 152, W - RS - 20, 142
+    draw.rounded_rectangle([(CX, CY), (CX + CRW, CY + CRH)],
+                            radius=10, fill=(8, 8, 18, 220))
+    draw.rounded_rectangle([(CX, CY), (CX + CRW, CY + CRH)],
+                            radius=10, outline=(50, 55, 70, 100), width=1)
+
+    # Thumbnail in card
+    THUMB_W = 110
+    if cover_raw:
+        try:
+            th = cover_raw.copy().resize((THUMB_W, CRH - 16), Image.LANCZOS)
+            mask_th = Image.new("L", th.size, 255)
+            img.paste(th.convert("RGBA"), (CX + CRW - THUMB_W - 10, CY + 8), mask_th)
+            draw = ImageDraw.Draw(img)
+        except Exception:
+            pass
+
+    draw.text((CX + 18, CY + 14), f"Episode  —  {ep_val}",
+              fill=(255, 255, 255), font=_font("poppins-bold", 24))
+    draw.text((CX + 18, CY + 54), f"Season   —  {sea_val}",
+              fill=(165, 165, 175), font=_font("poppins-regular", 19))
+    draw.text((CX + 18, CY + 82), f"Duration —  {dur_val}",
+              fill=(145, 145, 158), font=_font("poppins-regular", 18))
+    draw.text((CX + 18, CY + 110), f"Score    —  {sc_val}",
+              fill=(120, 120, 135), font=_font("poppins-regular", 17))
+
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=94, optimize=True)
+    buf.seek(0)
+    buf.name = f"poster_stream_{title[:16].replace(' ','_')}.jpg"
+    return buf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE: "vessel"  (Image 2 — Anime Vessel split-panel)
+# ─────────────────────────────────────────────────────────────────────────────
+def _make_vessel(
+    title, native_title, status, info_rows, desc,
+    cover_url, score, watermark_text, branding,
+):
+    """
+    Layout (1280×720):
+      LEFT PANEL (~58%)  : dark navy BG │ title │ description │ author/tags │ button
+      RIGHT PANEL (~42%) : portrait cover art (rounded shadow)
+      RIGHT EDGE         : vertical branding text rotated 90°
+      DECORATIVE         : hollow circles bottom-left
+    """
+    PANEL_W = 740  # left panel width
+    img = Image.new("RGBA", (W, H), (12, 14, 30, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Subtle gradient on left panel
+    for x in range(PANEL_W):
+        alpha = int(18 * (1 - x / PANEL_W))
+        draw.line([(x, 0), (x, H)], fill=(20, 25, 55, alpha))
+
+    # Right panel: slightly lighter
+    draw.rectangle([(PANEL_W, 0), (W, H)], fill=(18, 20, 40, 255))
+
+    cover_raw = _dl(cover_url)
+
+    # Cover art (portrait, centered in right panel, rounded)
+    if cover_raw:
+        try:
+            COV_W, COV_H = 310, 460
+            COV_X = PANEL_W + (W - PANEL_W - COV_W) // 2 - 30
+            COV_Y = (H - COV_H) // 2
+
+            cov = cover_raw.copy()
+            cw, ch = cov.size
+            scale = max(COV_W / cw, COV_H / ch)
+            cov = cov.resize((int(cw * scale), int(ch * scale)), Image.LANCZOS)
+            l = (cov.width - COV_W) // 2
+            t = (cov.height - COV_H) // 2
+            cov = cov.crop((l, t, l + COV_W, t + COV_H))
+
+            # Shadow
+            sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            ImageDraw.Draw(sh).rounded_rectangle(
+                [(COV_X + 10, COV_Y + 10), (COV_X + COV_W + 10, COV_Y + COV_H + 10)],
+                radius=18, fill=(0, 0, 0, 130))
+            img = Image.alpha_composite(img, sh)
+
+            # Rounded cover
+            mask = Image.new("L", (COV_W, COV_H), 0)
+            ImageDraw.Draw(mask).rounded_rectangle(
+                [(0, 0), (COV_W, COV_H)], radius=18, fill=255)
+            img.paste(cov.convert("RGB"), (COV_X, COV_Y), mask)
+            draw = ImageDraw.Draw(img)
+        except Exception:
+            pass
+
+    # Vertical branding text (right edge)
+    brand = watermark_text or branding or "BEAT ANIME"
+    try:
+        vfont = _font("bebas-neue-bold", 34)
+        txt_img = Image.new("RGBA", (500, 50), (0, 0, 0, 0))
+        ImageDraw.Draw(txt_img).text(
+            (0, 0), brand.upper(), fill=(60, 65, 100, 200), font=vfont)
+        txt_rot = txt_img.rotate(90, expand=True)
+        vx = W - txt_rot.width - 8
+        vy = (H - txt_rot.height) // 2
+        img.paste(txt_rot, (vx, vy), txt_rot)
+        draw = ImageDraw.Draw(img)
+    except Exception:
+        pass
+
+    # Decorative hollow circles (bottom-left)
+    for i, (cr, co) in enumerate([(100, 35), (70, 25), (45, 18)]):
+        cx_ = -cr + 80 + i * 40
+        cy_ = H - cr + 60 - i * 20
+        draw.ellipse([(cx_ - cr, cy_ - cr), (cx_ + cr, cy_ + cr)],
+                     outline=(40, 50, 90, 80), width=3)
+
+    # Left panel content
+    LX = 60
+
+    # Genre tags
+    genres = next((v for lb, v in info_rows if lb in ("Genres", "Genre")), "")
+    if genres:
+        tags = [g.strip() for g in genres.split(",")[:3]]
+        draw.text((LX, 60), "  ·  ".join(tags),
+                  fill=(120, 135, 185, 210), font=_font("poppins-regular", 20))
+
+    # Big title
+    ty = 108
+    title_lines = _wrap(title, 20)[:3]
+    for ln in title_lines:
+        draw.text((LX, ty), ln, fill=(240, 245, 255, 255),
+                  font=_font("bebas-neue-bold", 80))
+        ty += 86
+    ty += 8
+
+    # Native title
+    if native_title and native_title != title:
+        draw.text((LX, ty), native_title[:40],
+                  fill=(110, 125, 175, 185), font=_font("poppins-regular", 20))
+        ty += 32
+
+    # Description
+    for ln in _wrap(desc, 52)[:3]:
+        draw.text((LX, ty), ln, fill=(175, 180, 210, 210),
+                  font=_font("poppins-regular", 19))
+        ty += 26
+    ty += 18
+
+    # Author / studio row
+    studio = next((v for lb, v in info_rows if lb in ("Studio",)), "")
+    if studio:
+        draw.text((LX, ty), f"🎬  {studio}", fill=(140, 155, 200, 200),
                   font=_font("poppins-regular", 19))
         ty += 28
 
-    # Status pill
-    if status:
-        s_font = _font("poppins-bold", 15)
-        pill_text = f"  {status}  "
-        try:
-            bbox = draw.textbbox((50, ty), pill_text, font=s_font)
-            pw, ph = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        except Exception:
-            pw, ph = 90, 22
-        draw.rounded_rectangle(
-            [(48, ty - 2), (48 + pw + 12, ty + ph + 4)],
-            radius=8, fill=(*acc_rgb, 180),
-        )
-        draw.text((54, ty), pill_text, fill=(255, 255, 255),
-                  font=s_font)
-        ty += ph + 16
-
-    # Separator
-    draw.line([(50, ty), (W - 50, ty)], fill=(*acc_rgb, 100), width=1)
-    ty += 14
-
-    # ─── Layer 5b: Info rows ──────────────────────────────────────────────────
-    lbl_font = _font("poppins-bold", 18)
-    val_font = _font("poppins-regular", 18)
-    for label, value in info_rows[:7]:
-        if not value or value in ("-", "N/A", "None", "?"):
-            continue
-        draw.text((52, ty), f"{label}:", fill=(*acc_rgb, 230), font=lbl_font)
-        # Truncate value to fit
-        val_str = str(value)[:42]
-        draw.text((200, ty), val_str, fill=(*txt_rgb, 220), font=val_font)
+    # Status + score
+    sc_str = f"⭐  {score}/100" if score and str(score) not in ("?", "None", "0") else ""
+    st_str = status or ""
+    side_str = "  ·  ".join(filter(None, [st_str, sc_str]))
+    if side_str:
+        draw.text((LX, ty), side_str, fill=(120, 130, 175, 190),
+                  font=_font("poppins-regular", 18))
         ty += 30
-
-    # Separator before description
-    ty += 6
-    draw.line([(50, ty), (W - 50, ty)], fill=(*acc_rgb, 70), width=1)
     ty += 12
 
-    # ─── Layer 5c: Description ───────────────────────────────────────────────
-    desc_font = _font("poppins-regular", 16)
-    desc_lines = _wrap(desc, 64)
-    max_desc_lines = min(7, (H - 80 - ty) // 22)
-    for ln in desc_lines[:max_desc_lines]:
-        draw.text((50, ty), ln, fill=(*txt_rgb, 185), font=desc_font)
-        ty += 22
+    # "Get Started" button
+    bty = min(ty, H - 68)
+    BTW = 190
+    draw.rounded_rectangle([(LX, bty), (LX + BTW, bty + 46)],
+                            radius=23, fill=(50, 100, 220, 230))
+    draw.text((LX + BTW // 2, bty + 23), "Get Started  →",
+              fill=(255, 255, 255), font=_font("poppins-bold", 16), anchor="mm")
 
-    # ─── Layer 6: Template logo (top-right corner) ───────────────────────────
-    logo_key = t.get("logo")
-    if logo_key:
-        logo_img = _dl_icon(logo_key)
-        if logo_img:
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=94, optimize=True)
+    buf.seek(0)
+    buf.name = f"poster_vessel_{title[:16].replace(' ','_')}.jpg"
+    return buf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE: "splash"  (Image 3 — Full-bleed cinematic title card)
+# ─────────────────────────────────────────────────────────────────────────────
+def _make_splash(
+    title, native_title, status, info_rows, desc,
+    cover_url, score, watermark_text, branding,
+):
+    """
+    Layout (1280×720):
+      Full-bleed cover as background · heavy dark gradient
+      CENTER: large stylised title with shadow band
+      BOTTOM : genre · score · studio · branding
+    """
+    img = Image.new("RGBA", (W, H), (5, 5, 8, 255))
+    cover_raw = _dl(cover_url)
+
+    # Full-bleed cover
+    if cover_raw:
+        try:
+            bg = cover_raw.copy().resize((W, H), Image.LANCZOS)
+            img = Image.alpha_composite(img, bg.convert("RGBA"))
+        except Exception:
+            pass
+
+    # Dark gradient (bottom-heavy)
+    grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(grad)
+    for y in range(H):
+        ratio = y / H
+        # Heavier at top and bottom, lighter in middle
+        alpha = int(210 * (0.6 + 0.4 * abs(ratio - 0.45)))
+        gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
+    img = Image.alpha_composite(img, grad)
+
+    # Additional center band (for text readability)
+    band_h = 200
+    band_y = (H - band_h) // 2 - 20
+    band = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(band).rectangle([(0, band_y), (W, band_y + band_h)],
+                                   fill=(0, 0, 0, 110))
+    img = Image.alpha_composite(img, band)
+    draw = ImageDraw.Draw(img)
+
+    # ── Title: large, centered, with letter-spacing illusion ──
+    title_up = title.upper()
+    tf = _font("bebas-neue-bold", 110)
+    try:
+        tw = draw.textbbox((0, 0), title_up, font=tf)[2]
+    except Exception:
+        tw = len(title_up) * 65
+    tx = (W - min(tw, W - 80)) // 2
+    ty_title = band_y + 20
+
+    # Drop shadow
+    draw.text((tx + 4, ty_title + 4), title_up, fill=(0, 0, 0, 160), font=tf)
+
+    # Main title text — if fits single line
+    if tw <= W - 80:
+        draw.text((tx, ty_title), title_up, fill=(255, 255, 255, 255), font=tf)
+    else:
+        # Wrap to 2 lines at smaller size
+        tf2 = _font("bebas-neue-bold", 82)
+        for i, ln in enumerate(_wrap(title_up, 16)[:2]):
             try:
-                LW, LH = 90, 40
-                logo_img = logo_img.resize((LW, LH), Image.LANCZOS)
-                img.paste(logo_img, (W - LW - 12, 12), logo_img.split()[3] if logo_img.mode == "RGBA" else None)
+                lw = draw.textbbox((0, 0), ln, font=tf2)[2]
+            except Exception:
+                lw = len(ln) * 48
+            lx = (W - lw) // 2
+            draw.text((lx, ty_title + i * 88), ln,
+                      fill=(255, 255, 255, 255), font=tf2)
+
+    # Native subtitle
+    if native_title and native_title != title:
+        try:
+            nw = draw.textbbox((0, 0), native_title, font=_font("poppins-regular", 28))[2]
+        except Exception:
+            nw = len(native_title) * 17
+        draw.text(((W - nw) // 2, band_y + band_h - 40), native_title,
+                  fill=(200, 210, 230, 190), font=_font("poppins-regular", 28))
+
+    # Bottom info bar
+    genres = next((v for lb, v in info_rows if lb in ("Genres", "Genre")), "")
+    studio = next((v for lb, v in info_rows if lb == "Studio"), "")
+    sc_str = f"{score}/100" if score and str(score) not in ("?", "None", "0") else ""
+    pieces = [g.strip() for g in genres.split(",")[:3]] + ([f"⭐ {sc_str}"] if sc_str else []) + ([studio] if studio else [])
+    bottom_str = "   ·   ".join(pieces)
+    if bottom_str:
+        try:
+            bw2 = draw.textbbox((0, 0), bottom_str, font=_font("poppins-regular", 22))[2]
+        except Exception:
+            bw2 = len(bottom_str) * 13
+        draw.text(((W - bw2) // 2, H - 72), bottom_str,
+                  fill=(210, 215, 225, 220), font=_font("poppins-regular", 22))
+
+    # Branding bottom-center
+    brand = watermark_text or branding or "@BeatAnime"
+    try:
+        bbw = draw.textbbox((0, 0), brand, font=_font("poppins-bold", 18))[2]
+    except Exception:
+        bbw = len(brand) * 11
+    draw.text(((W - bbw) // 2, H - 36), brand,
+              fill=(160, 170, 190, 180), font=_font("poppins-bold", 18))
+
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=94, optimize=True)
+    buf.seek(0)
+    buf.name = f"poster_splash_{title[:16].replace(' ','_')}.jpg"
+    return buf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPLATE: "od3n"  (Image 4 — Character-center, vertical title, info right)
+# ─────────────────────────────────────────────────────────────────────────────
+def _make_od3n(
+    title, native_title, status, info_rows, desc,
+    cover_url, score, watermark_text, branding,
+):
+    """
+    Layout (1280×720):
+      Full dark BG
+      CENTER/LEFT : character cover art (full height, no crop top)
+      LEFT EDGE   : vertical rotated large title + hollow squares
+      RIGHT PANEL : genre tags │ description │ studio·score │ buttons │ thumbnails
+      BOTTOM-LEFT : social icon row
+    """
+    img = Image.new("RGBA", (W, H), (12, 12, 14, 255))
+    draw = ImageDraw.Draw(img)
+    cover_raw = _dl(cover_url)
+
+    # ── Subtle horizontal scanline texture (dark) ──
+    for y in range(0, H, 4):
+        draw.line([(0, y), (W, y)], fill=(255, 255, 255, 4))
+
+    # ── Vertical title text (left edge, rotated 90° CCW) ──
+    VERT_FONT_SIZE = 118
+    vtf = _font("bebas-neue-bold", VERT_FONT_SIZE)
+    title_upper = title.upper()[:20]  # cap length
+    try:
+        tsize = draw.textbbox((0, 0), title_upper, font=vtf)
+        txt_w = tsize[2] - tsize[0]
+    except Exception:
+        txt_w = len(title_upper) * 68
+
+    txt_layer = Image.new("RGBA", (txt_w + 20, VERT_FONT_SIZE + 20), (0, 0, 0, 0))
+    ImageDraw.Draw(txt_layer).text(
+        (10, 5), title_upper, fill=(55, 58, 62, 230), font=vtf)
+    rotated = txt_layer.rotate(90, expand=True)
+    vert_x = 8
+    vert_y = (H - rotated.height) // 2
+    img.paste(rotated, (vert_x, vert_y), rotated)
+    draw = ImageDraw.Draw(img)
+
+    CHAR_START_X = vert_x + rotated.width + 8  # where character starts
+
+    # ── Hollow squares (left decoration strip) ──
+    sq_x = CHAR_START_X - 2
+    for i, (sy, ss) in enumerate([(90, 42), (165, 32), (230, 24), (285, 18), (330, 13)]):
+        draw.rectangle([(sq_x, sy), (sq_x + ss, sy + ss)],
+                       outline=(70, 74, 80, 160), width=2)
+
+    # ── Character cover art (center-left, full height) ──
+    CHAR_W = 480
+    CHAR_X = CHAR_START_X + 10
+    if cover_raw:
+        try:
+            cw, ch = cover_raw.size
+            scale = max(CHAR_W / cw, H / ch)
+            cov = cover_raw.copy().resize((int(cw * scale), int(ch * scale)), Image.LANCZOS)
+            l = (cov.width  - CHAR_W) // 2
+            t = max(0, (cov.height - H) // 2)
+            cov = cov.crop((l, t, l + CHAR_W, t + H))
+
+            # Fade mask: hard on right edge
+            mask = Image.new("L", (CHAR_W, H), 255)
+            md = ImageDraw.Draw(mask)
+            RFADE = 120
+            for x in range(RFADE):
+                md.line([(CHAR_W - RFADE + x, 0), (CHAR_W - RFADE + x, H)],
+                        fill=int(255 * (1 - x / RFADE)))
+            img.paste(cov.convert("RGBA"), (CHAR_X, 0), mask)
+            draw = ImageDraw.Draw(img)
+        except Exception:
+            pass
+
+    # ── Right info panel ──
+    RX = CHAR_X + CHAR_W + 20
+    PANEL_W2 = W - RX - 20
+
+    # Genre tags (top right)
+    genres = next((v for lb, v in info_rows if lb in ("Genres", "Genre")), "")
+    RY = 50
+    if genres:
+        tags = [g.strip().upper() for g in genres.split(",")[:3]]
+        draw.text((RX, RY), "   ".join(tags),
+                  fill=(195, 198, 205, 220), font=_font("poppins-regular", 18))
+        RY += 32
+    RY += 8
+
+    # Teaser description (split into 2 parts like Image 4)
+    desc_short = _wrap(desc, 36)
+    half = max(1, len(desc_short) // 2)
+    # Left sub-column of right panel
+    SUB_X = RX
+    for ln in desc_short[:half]:
+        draw.text((SUB_X, RY), ln, fill=(165, 168, 178, 210),
+                  font=_font("poppins-regular", 18))
+        RY += 24
+    RY += 10
+
+    # Studio + score
+    studio = next((v for lb, v in info_rows if lb == "Studio"), "")
+    sc_val = str(score) if score and str(score) not in ("?", "None", "0") else ""
+    if studio:
+        draw.text((RX, RY), studio.upper() + "   STUDIO",
+                  fill=(175, 178, 188, 210), font=_font("poppins-bold", 17))
+        RY += 26
+    if sc_val:
+        try:
+            star_str = f"{sc_val}  ★"
+            draw.text((RX, RY), star_str,
+                      fill=(220, 190, 60, 235), font=_font("poppins-bold", 22))
+        except Exception:
+            pass
+        RY += 32
+    RY += 14
+
+    # DOWNLOAD + MORE INFO buttons
+    BH2 = 44
+    BW2 = (PANEL_W2 - 10) // 2
+    draw.rectangle([(RX, RY), (RX + BW2, RY + BH2)],
+                   outline=(200, 202, 210, 200), width=2)
+    draw.text((RX + BW2 // 2, RY + BH2 // 2), "DOWNLOAD",
+              fill=(220, 222, 228), font=_font("poppins-bold", 14), anchor="mm")
+    draw.rectangle([(RX + BW2 + 10, RY), (RX + PANEL_W2, RY + BH2)],
+                   outline=(200, 202, 210, 200), width=2)
+    draw.text((RX + BW2 + 10 + BW2 // 2, RY + BH2 // 2), "MORE INFO",
+              fill=(220, 222, 228), font=_font("poppins-bold", 14), anchor="mm")
+    RY += BH2 + 20
+
+    # Character thumbnails (bottom right — 2 small previews)
+    if cover_raw:
+        TH_W, TH_H = 120, 90
+        for i in range(2):
+            try:
+                tx2 = RX + i * (TH_W + 12)
+                ty2 = H - TH_H - 36
+                th = cover_raw.copy().resize((TH_W, TH_H), Image.LANCZOS)
+                # Slightly different crop for variety
+                cw2, ch2 = cover_raw.size
+                scale2 = max(TH_W / cw2, TH_H / ch2)
+                th2 = cover_raw.copy().resize(
+                    (int(cw2 * scale2), int(ch2 * scale2)), Image.LANCZOS)
+                offset_x = max(0, min(th2.width - TH_W,  i * (th2.width // 3)))
+                offset_y = max(0, min(th2.height - TH_H, i * 40))
+                th2 = th2.crop((offset_x, offset_y, offset_x + TH_W, offset_y + TH_H))
+                img.paste(th2.convert("RGBA"), (tx2, ty2))
                 draw = ImageDraw.Draw(img)
+                draw.rectangle([(tx2, ty2), (tx2 + TH_W, ty2 + TH_H)],
+                                outline=(80, 82, 90, 160), width=1)
             except Exception:
                 pass
 
-    # ─── Layer 6b: Watermark overlay ─────────────────────────────────────────
-    if watermark_text:
-        _apply_watermark(img, draw, watermark_text, watermark_pos, txt_rgb)
+    # "NEXT>> / BRANDING" text bottom-right
+    brand = watermark_text or branding or "@BeatAnime"
+    draw.text((W - 16, H - 50), "NEXT>>", fill=(160, 162, 170, 180),
+              font=_font("poppins-bold", 14), anchor="rm")
+    draw.text((W - 16, H - 28), brand.upper(),
+              fill=(140, 142, 155, 170), font=_font("poppins-bold", 13), anchor="rm")
 
-    # ─── Layer 6c: Footer bar ────────────────────────────────────────────────
-    footer_y = H - 52
-    draw.rectangle([(0, footer_y), (W, H)], fill=(*bg_rgb, 220))
-    draw.line([(0, footer_y), (W, footer_y)], fill=(*acc_rgb, 160), width=1)
-    foot_font = _font("poppins-bold", 16)
-    draw.text((20, footer_y + 16), "🎌 BeatAnime",
-              fill=(*acc_rgb, 255), font=foot_font)
-    draw.text((W - 20, footer_y + 16), "@BeatAnime",
-              fill=(*txt_rgb, 140), font=foot_font, anchor="ra")
+    # Social icons row (bottom-left text substitutes)
+    icons = ["♡", "✉", "✈", "⊹"]
+    ix = CHAR_X + 10
+    for ico in icons:
+        draw.text((ix, H - 32), ico, fill=(170, 172, 182, 200),
+                  font=_font("poppins-regular", 22))
+        ix += 34
 
-    # ─── Export ───────────────────────────────────────────────────────────────
     buf = BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=92, optimize=True)
+    img.convert("RGB").save(buf, format="JPEG", quality=94, optimize=True)
     buf.seek(0)
-    buf.name = f"poster_{template}_{title[:20].replace(' ', '_')}.jpg"
+    buf.name = f"poster_od3n_{title[:16].replace(' ','_')}.jpg"
     return buf
 
 
@@ -1083,32 +1496,97 @@ async def _poster_cmd(
             logo_pos=logo_pos,
         )
 
-        # Build caption
+        # Build caption — use custom template if set, else default
         site_url = data.get("siteUrl", "")
-        genres = ", ".join((data.get("genres") or [])[:3]) if media_type in ("ANIME", "MANGA") else ""
-        caption = (
-            f"<b>{html.escape(title)}</b>\n"
-            f"{'<i>' + html.escape(genres) + '</i>' + chr(10) if genres else ''}"
-            f"{'<b>' + html.escape(branding) + '</b>' + chr(10) if branding else ''}"
-            f"\n<i>Posted via @BeatAnime</i>"
-        )
+        genres   = ", ".join((data.get("genres") or [])[:3]) if media_type in ("ANIME", "MANGA") else ""
+        score_v  = data.get("averageScore", "")
+        status_v = (data.get("status") or "").replace("_", " ").title()
+        episodes = str(data.get("episodes") or "?")
+        stnode   = ((data.get("studios") or {}).get("nodes") or [])
+        studio   = stnode[0].get("name", "") if stnode else ""
+        lang_v   = ""  # poster_engine commands don't have lang selection — left empty
+
+        # Try custom caption template
+        tmpl_cap = settings.get("caption_template", "")
+        if tmpl_cap:
+            caption = (tmpl_cap
+                .replace("{title}",    html.escape(title))
+                .replace("{native}",   html.escape(native or ""))
+                .replace("{genres}",   html.escape(genres))
+                .replace("{score}",    str(score_v))
+                .replace("{status}",   html.escape(status_v))
+                .replace("{episodes}", episodes)
+                .replace("{studio}",   html.escape(studio))
+                .replace("{lang}",     lang_v)
+                .replace("{language}", lang_v)
+                .replace("{link}",     join_url))
+        else:
+            caption = (
+                f"<b>{html.escape(title)}</b>\n"
+                f"{'<i>' + html.escape(genres) + '</i>' + chr(10) if genres else ''}"
+                f"{'<b>' + html.escape(branding) + '</b>' + chr(10) if branding else ''}"
+            )
+
         if len(caption) > 1024:
             caption = caption[:1020] + "…"
         caption = _apply_poster_style(caption)
 
-        # Buttons
-        btns = [[InlineKeyboardButton("📢 BeatAnime", url=PUBLIC_ANIME_CHANNEL_URL)]]
+        # Buttons — info + join now to watch
+        from core.config import JOIN_BTN_TEXT
+        try:
+            from database_dual import get_setting as _gs
+            join_txt = _gs("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
+            join_url = _gs("env_PUBLIC_ANIME_CHANNEL_URL", "") or PUBLIC_ANIME_CHANNEL_URL
+            main_ch  = _gs("main_channel_id", "")
+        except Exception:
+            join_txt = JOIN_BTN_TEXT
+            join_url = PUBLIC_ANIME_CHANNEL_URL
+            main_ch  = ""
+
+        # Try anime channel link from DB
+        try:
+            from database_dual import get_anime_channel_links as _acl
+            alinks = _acl(title)
+            if alinks and alinks[0][2]:  # has link_id
+                bot_uname = context.bot.username or ""
+                if bot_uname:
+                    join_url = f"https://t.me/{bot_uname}?start={alinks[0][2]}"
+        except Exception:
+            pass
+
+        btns = [
+            [InlineKeyboardButton("ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=join_url)],
+        ]
         if site_url:
-            btns[0].append(InlineKeyboardButton("📋 Info", url=site_url))
+            btns.append([InlineKeyboardButton("📋 ɪɴꜰᴏ", url=site_url)])
+
+        # "Send to main channel" only for admin in private
+        if chat_id == uid and uid in (ADMIN_ID, OWNER_ID) and main_ch:
+            btns.append([InlineKeyboardButton(
+                "📤 sᴇɴᴅ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ",
+                callback_data=f"pe_send_main:{template}:{media_type}"
+            )])
 
         if poster_buf:
-            await context.bot.send_photo(
+            sent_poster = await context.bot.send_photo(
                 chat_id=chat_id,
                 photo=poster_buf,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(btns),
             )
+            # Store for send-to-main later
+            if sent_poster:
+                import json as _json
+                try:
+                    from database_dual import set_setting as _ss
+                    _ss(f"last_poster_{uid}", _json.dumps({
+                        "chat_id": chat_id,
+                        "msg_id":  sent_poster.message_id,
+                        "caption": caption,
+                    }))
+                except Exception:
+                    pass
         else:
             # Fallback: send as text card if PIL unavailable
             await context.bot.send_message(
