@@ -267,23 +267,29 @@ async def show_category_settings_menu(
     except Exception:
         style = "normal"
 
+    _TMPL_ICONS = {
+        "ani":   "🎌", "dark":  "🌑", "light": "☀️",
+        "crun":  "🍊", "net":   "🔴", "mod":   "✨",
+        "anim":  "📗", "netm":  "🟥",
+    }
+    tmpl_icon = _TMPL_ICONS.get(settings["template_name"], "🖼")
     text = (
-        f"{b(category.upper() + ' SETTINGS')}\n\n"
+        b(small_caps(category + " settings")) + "\n\n"
         + bq(
-            f"<b>Template:</b> {code(settings['template_name'])}\n"
-            f"<b>Font Style:</b> {code(settings['font_style'])}\n"
-            f"<b>Buttons:</b> {code(str(btns_count))} configured\n"
-            f"<b>Watermark:</b> {code(e(str(wm)[:30]))}\n"
-            f"<b>Logo:</b> {logo}\n"
-            f"<b>Caption:</b> {'✔️ Custom' if settings.get('caption_template') else 'Default'}\n"
-            f"<b>Branding:</b> {'✔️ Set' if settings.get('branding') else 'None'}\n"
-            f"<b>Text Style:</b> {code(style)}"
+            f"<b>{small_caps('Poster Layout')}:</b> {tmpl_icon} {code(settings['template_name'])}\n"
+            f"<b>{small_caps('Font Style')}:</b> {code(settings['font_style'])}\n"
+            f"<b>{small_caps('Buttons')}:</b> {code(str(btns_count))} {small_caps('configured')}\n"
+            f"<b>{small_caps('Watermark')}:</b> {code(e(str(wm)[:30]))}\n"
+            f"<b>{small_caps('Logo')}:</b> {logo}\n"
+            f"<b>{small_caps('Caption')}:</b> {'✔️ ' + small_caps('custom') if settings.get('caption_template') else small_caps('default')}\n"
+            f"<b>{small_caps('Branding')}:</b> {'✔️ ' + small_caps('set') if settings.get('branding') else small_caps('none')}\n"
+            f"<b>{small_caps('Text Style')}:</b> {code(style)}"
         )
     )
     grid = [
         _btn("CAPTION",      f"cat_caption_{category}"),
         _btn("BUTTONS",      f"cat_buttons_{category}"),
-        _btn("TEMPLATE",     f"cat_thumbnail_{category}"),
+        _btn("🎨 LAYOUT",    f"cat_thumbnail_{category}"),
         _btn("BRANDING",     f"cat_branding_{category}"),
         _btn("FONT STYLE",   f"cat_font_{category}"),
         _btn("BTN STYLE",    f"cat_btn_style_{category}"),
