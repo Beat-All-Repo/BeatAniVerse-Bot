@@ -358,8 +358,131 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
         reply_text = random.choice(["Interesting! Tell me more! ", "That's cool! What anime are you watching? ", "I'm here to chat! What's on your mind? 😊"])
     history.append({"role": "assistant", "content": reply_text})
     _chatbot_conv[chat_id] = history[-20:]
+    sent_chatbot = None
     try:
-        await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
+        sent_chatbot = await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
     except Exception:
-        try: await update.message.reply_text(reply_text)
-        except Exception: pass
+        try:
+            sent_chatbot = await update.message.reply_text(reply_text)
+        except Exception:
+            pass
+
+    # Auto-delete user's message in GC (fast), but NEVER delete chatbot replies in GC
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    try:
+        from core.auto_delete import auto_delete_middleware
+        await auto_delete_middleware(
+            bot          = update.get_bot() if hasattr(update, "get_bot") else update.message.get_bot(),
+            sent_msg     = sent_chatbot,
+            trigger_msg  = update.message,
+            is_chatbot   = True,   # ← exempts GC chatbot replies from deletion
+        )
+    except Exception:
+        pass
+
+
+# ── User Features Panel ────────────────────────────────────────────────────────
+
+async def send_user_features_panel(
+    update,
+    context,
+    query=None,
+    chat_id: int = 0,
+    page: int = 0,
+) -> None:
+    """Send the user-facing features panel showing available commands."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.constants import ParseMode
+    from core.text_utils import b, bq, small_caps, e
+    from core.helpers import safe_send_message, safe_send_photo
+
+    if not chat_id:
+        if query:
+            chat_id = query.message.chat_id
+        elif update and update.effective_chat:
+            chat_id = update.effective_chat.id
+
+    # Delete previous panel before sending new
+    if query:
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+
+    sc = small_caps
+
+    FEATURES_PAGES = [
+        {
+            "title": " ᴀɴɪᴍᴇ & ᴍᴀɴɢᴀ",
+            "items": [
+                ("/anime &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴀɴɪᴍᴇ ᴘᴏsᴛᴇʀ + ɪɴꜰᴏ"),
+                ("/manga &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴍᴀɴɢᴀ ᴘᴏsᴛᴇʀ"),
+                ("/net &lt;title&gt;",      "ɴᴇᴛꜰʟɪx-sᴛʏʟᴇ ᴘᴏsᴛᴇʀ"),
+                ("/airing &lt;name&gt;",    "ᴄʜᴇᴄᴋ ᴀɪʀɪɴɢ ꜱᴄʜᴇᴅᴜʟᴇ"),
+                ("/character &lt;name&gt;", "ᴄʜᴀʀᴀᴄᴛᴇʀ ɪɴꜰᴏ"),
+                ("/movie &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴍᴏᴠɪᴇ ᴘᴏsᴛᴇʀ"),
+            ],
+        },
+        {
+            "title": "👥 ꜱᴏᴄɪᴀʟ",
+            "items": [
+                ("/hug",   "sᴇɴᴅ ᴀ ʜᴜɢ ɢɪꜰ"),
+                ("/slap",  "sʟᴀᴘ sᴏᴍᴇᴏɴᴇ"),
+                ("/kiss",  "sᴇɴᴅ ᴀ ᴋɪss ɢɪꜰ"),
+                ("/pat",   "ᴘᴀᴛ sᴏᴍᴇᴏɴᴇ"),
+                ("/punch", "ᴘᴜɴᴄʜ sᴏᴍᴇᴏɴᴇ"),
+                ("/couple","sʜᴏᴡ ᴀ ᴄᴏᴜᴘʟᴇ ɢɪꜰ"),
+            ],
+        },
+        {
+            "title": " ɢʀᴏᴜᴘ ᴛᴏᴏʟs",
+            "items": [
+                ("/warn",       "ᴡᴀʀɴ ᴀ ᴜsᴇʀ"),
+                ("/warns",      "ᴄʜᴇᴄᴋ ᴡᴀʀɴs"),
+                ("/unwarn",     "ʀᴇᴍᴏᴠᴇ ᴀ ᴡᴀʀɴ"),
+                ("/save",       "sᴀᴠᴇ ᴀ ɴᴏᴛᴇ"),
+                ("/get",        "ɢᴇᴛ ᴀ ɴᴏᴛᴇ"),
+                ("/rules",      "sʜᴏᴡ ɢʀᴏᴜᴘ ʀᴜʟᴇs"),
+            ],
+        },
+    ]
+
+    pages = FEATURES_PAGES
+    page = page % len(pages)
+    pg = pages[page]
+
+    lines = "\n".join(
+        f"<code>{cmd}</code> — {desc}"
+        for cmd, desc in pg["items"]
+    )
+    text = (
+        b(pg["title"]) + "\n\n"
+        + lines + "\n\n"
+        + bq(sc("use /help for full command list"))
+    )
+
+    total = len(pages)
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("🔙", callback_data=f"user_features_{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"· {page+1}/{total} ·", callback_data="noop"))
+    if page < total - 1:
+        nav_row.append(InlineKeyboardButton("🔜", callback_data=f"user_features_{page+1}"))
+
+    keyboard = [
+        nav_row,
+        [InlineKeyboardButton("✕ " + sc("close"), callback_data="close_message")],
+    ]
+
+    try:
+        from core.panel_image import get_panel_pic_async
+        img = await get_panel_pic_async("features")
+    except Exception:
+        img = None
+
+    markup = InlineKeyboardMarkup(keyboard)
+    if img:
+        sent = await safe_send_photo(context.bot, chat_id, img, caption=text, reply_markup=markup)
+        if sent:
+            return
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
