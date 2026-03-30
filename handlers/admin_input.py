@@ -928,6 +928,42 @@ async def handle_admin_message(
             reply_markup=InlineKeyboardMarkup([[_back_btn("fsub_fwd_source"), _close_btn()]]))
         return
 
+    # ── Set main channel for "send to main channel" feature ───────────────────
+    if isinstance(state, str) and state == "AWAITING_MAIN_CHANNEL_ID":
+        user_states.pop(uid, None)
+        raw = text.strip()
+        # Accept forwarded message (channel post) or @username or numeric ID
+        ch_id_str = raw
+        if update.message and update.message.forward_from_chat:
+            ch_id_str = str(update.message.forward_from_chat.id)
+        elif raw.startswith("@"):
+            try:
+                ch = await context.bot.get_chat(raw)
+                ch_id_str = str(ch.id)
+            except Exception:
+                await safe_send_message(context.bot, chat_id,
+                    b(small_caps(f"❌ could not find channel: {e(raw)}")))
+                return
+        elif not raw.lstrip("-").isdigit():
+            try:
+                ch = await context.bot.get_chat(raw if raw.startswith("@") else f"@{raw}")
+                ch_id_str = str(ch.id)
+            except Exception:
+                await safe_send_message(context.bot, chat_id,
+                    b(small_caps(f"❌ invalid channel id: {e(raw)}")))
+                return
+
+        from database_dual import set_setting
+        set_setting("main_channel_id", ch_id_str)
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("✅ main channel set!")) + "\n\n"
+            + bq(small_caps(f"channel id: ") + f"<code>{e(ch_id_str)}</code>\n"
+                 + small_caps("posters will be forwarded here when 'send to main channel' is tapped.")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_settings"), _close_btn()]]),
+        )
+        return
+
     if isinstance(state, str) and state == "AWAITING_FWD_MSGID":
         user_states.pop(uid, None)
         try:
@@ -952,6 +988,38 @@ async def handle_admin_message(
             )
         else:
             await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty text — not saved.")))
+        return
+
+    # ── DM auto-delete delay ──────────────────────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_DM_DEL_DELAY":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            from database_dual import set_setting
+            set_setting("auto_delete_dm_delay", str(max(0, secs)))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ dm auto-delete delay set: {secs}s" if secs else "✅ dm auto-delete disabled")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ invalid — send a number like 120")))
+        return
+
+    # ── GC auto-delete delay ──────────────────────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_GC_DEL_DELAY":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            from database_dual import set_setting
+            set_setting("auto_delete_gc_delay", str(max(0, secs)))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ gc auto-delete delay set: {secs}s" if secs else "✅ gc auto-delete disabled")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ invalid — send a number like 60")))
         return
 
     logger.debug(f"Admin message in unknown state {state} from {uid}: {text[:50]}")
