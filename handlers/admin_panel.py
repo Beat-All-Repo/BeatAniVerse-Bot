@@ -281,15 +281,16 @@ async def show_category_settings_menu(
         )
     )
     grid = [
-        _btn("CAPTION",     f"cat_caption_{category}"),
-        _btn("BUTTONS",     f"cat_buttons_{category}"),
-        _btn("TEMPLATE",    f"cat_thumbnail_{category}"),
-        _btn("BRANDING",    f"cat_branding_{category}"),
-        _btn("FONT STYLE",  f"cat_font_{category}"),
-        _btn("WATERMARK",   f"cat_watermark_{category}"),
-        _btn("LOGO",        f"cat_logo_{category}"),
-        _btn("AUTO UPDATE", "admin_autoupdate"),
-        _btn("PREVIEW",     f"cat_preview_{category}"),
+        _btn("CAPTION",      f"cat_caption_{category}"),
+        _btn("BUTTONS",      f"cat_buttons_{category}"),
+        _btn("TEMPLATE",     f"cat_thumbnail_{category}"),
+        _btn("BRANDING",     f"cat_branding_{category}"),
+        _btn("FONT STYLE",   f"cat_font_{category}"),
+        _btn("BTN STYLE",    f"cat_btn_style_{category}"),
+        _btn("WATERMARK",    f"cat_watermark_{category}"),
+        _btn("LOGO",         f"cat_logo_{category}"),
+        _btn("AUTO UPDATE",  "admin_autoupdate"),
+        _btn("PREVIEW",      f"cat_preview_{category}"),
     ]
     keyboard = _grid3(grid)
     keyboard.append([_back_btn("admin_category_settings"), _close_btn()])
@@ -557,3 +558,212 @@ async def show_user_management_panel(update, context, query=None) -> None:
         if sent:
             return
     await safe_send_message(context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(rows))
+
+
+# ── Settings Panel ─────────────────────────────────────────────────────────────
+
+async def show_settings_panel(update, context, query=None) -> None:
+    """Show main settings panel with all configurable options."""
+    from telegram import InlineKeyboardMarkup
+    from core.buttons import _btn, _grid3, _back_btn, _close_btn
+    from core.helpers import safe_send_message, safe_send_photo
+    from core.panel_image import get_panel_pic_async
+    from database_dual import get_setting
+
+    chat_id = query.message.chat_id if query else (
+        update.effective_chat.id if update else 0
+    )
+    if query:
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+
+    maint = get_setting("maintenance_mode", "false") == "true"
+    clone_red = get_setting("clone_redirect_enabled", "false") == "true"
+    clean_gc = get_setting("clean_gc_enabled", "true") == "true"
+    main_channel = get_setting("main_channel_id", "") or "Not set"
+
+    text = (
+        b(small_caps("⚙️ settings")) + "\n\n"
+        + bq(
+            f"<b>{small_caps('Maintenance')}:</b> {'🔴 ON' if maint else '🟢 OFF'}\n"
+            f"<b>{small_caps('Clone Redirect')}:</b> {'✅ ON' if clone_red else '❌ OFF'}\n"
+            f"<b>{small_caps('Clean GC')}:</b> {'✅ ON' if clean_gc else '❌ OFF'}\n"
+            f"<b>{small_caps('Main Channel')}:</b> <code>{e(str(main_channel))}</code>"
+        )
+    )
+    # Load auto-delete config
+    try:
+        from database_dual import get_setting
+        auto_del_on  = get_setting("auto_delete_messages", "true") == "true"
+        dm_delay_val = get_setting("auto_delete_dm_delay", "120")
+        gc_delay_val = get_setting("auto_delete_gc_delay", "60")
+    except Exception:
+        auto_del_on  = True
+        dm_delay_val = "120"
+        gc_delay_val = "60"
+
+    text += (
+        "\n\n" + bq(
+            f"<b>{small_caps('Auto-Delete')}:</b> {'✅ ON' if auto_del_on else '❌ OFF'}\n"
+            f"<b>{small_caps('DM Delay')}:</b> <code>{e(dm_delay_val)}s</code>\n"
+            f"<b>{small_caps('GC Delay')}:</b> <code>{e(gc_delay_val)}s</code>"
+        )
+    )
+    grid = [
+        _btn("MAINTENANCE", "toggle_maintenance"),
+        _btn("CLONE REDIRECT", "toggle_clone_redirect"),
+        _btn("CLEAN GC", "toggle_clean_gc"),
+        _btn("SET MAIN CHANNEL", "admin_set_main_channel"),
+        _btn("LINK EXPIRY", "admin_set_link_expiry"),
+        _btn("AUTO DELETE", "toggle_auto_delete"),
+        _btn("DM DEL DELAY", "set_dm_del_delay"),
+        _btn("GC DEL DELAY", "set_gc_del_delay"),
+        _btn("CATEGORY SETTINGS", "admin_category_settings"),
+        _btn("FEATURE FLAGS", "admin_feature_flags"),
+        _btn("ENV VARS", "admin_env_panel"),
+        _btn("TEXT STYLE", "admin_text_style"),
+    ]
+    rows = _grid3(grid)
+    rows.append([_back_btn("admin_back"), _close_btn()])
+    markup = InlineKeyboardMarkup(rows)
+
+    img = None
+    try:
+        img = await get_panel_pic_async("settings")
+    except Exception:
+        pass
+
+    if img:
+        sent = await safe_send_photo(context.bot, chat_id, img, caption=text, reply_markup=markup)
+        if sent:
+            return
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
+
+
+# ── Channels Panel (Force-Sub) ────────────────────────────────────────────────
+
+async def _show_channels_panel(update, context, query=None) -> None:
+    """Show force-sub channels management panel."""
+    from telegram import InlineKeyboardMarkup
+    from core.buttons import _btn, _grid3, _back_btn, _close_btn
+    from core.helpers import safe_send_message, safe_send_photo
+    from core.panel_image import get_panel_pic_async
+    from database_dual import get_all_force_sub_channels
+
+    chat_id = query.message.chat_id if query else (
+        update.effective_chat.id if update else 0
+    )
+    if query:
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+
+    channels = get_all_force_sub_channels()
+
+    text = b(small_caps("📢 force-sub channels")) + "\n\n"
+    if channels:
+        for ch in channels[:10]:
+            cid = ch.get("channel_id") or ch[0] if isinstance(ch, (list, tuple)) else ch
+            cname = ch.get("channel_name") or ch[1] if isinstance(ch, (list, tuple)) else str(cid)
+            text += f"• <code>{e(str(cid))}</code> — <b>{e(str(cname))}</b>\n"
+    else:
+        text += bq(small_caps("no force-sub channels configured"))
+
+    grid = [
+        _btn("➕ ADD CHANNEL", "fsub_add"),
+        _btn("➖ REMOVE", "fsub_remove"),
+        _btn("✅ VERIFY ALL", "fsub_verify"),
+        _btn("📊 STATS", "fsub_link_stats"),
+        _btn("🔗 GENERATE LINK", "generate_links"),
+    ]
+    rows = _grid3(grid)
+    rows.append([_back_btn("admin_back"), _close_btn()])
+    markup = InlineKeyboardMarkup(rows)
+
+    img = None
+    try:
+        img = await get_panel_pic_async("channels")
+    except Exception:
+        pass
+
+    if img:
+        sent = await safe_send_photo(context.bot, chat_id, img, caption=text, reply_markup=markup)
+        if sent:
+            return
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
+
+
+# ── Env Panel ─────────────────────────────────────────────────────────────────
+
+async def show_env_panel(context, chat_id: int) -> None:
+    """Show environment variables management panel."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    from core.buttons import _btn, _back_btn, _close_btn
+    from core.helpers import safe_send_message
+    from database_dual import get_setting
+
+    ENV_KEYS = [
+        ("BOT_NAME",                "Bot Name"),
+        ("PUBLIC_ANIME_CHANNEL_URL","Anime Channel URL"),
+        ("REQUEST_CHANNEL_URL",     "Request Channel URL"),
+        ("ADMIN_CONTACT_USERNAME",  "Admin Username"),
+        ("JOIN_BTN_TEXT",           "Join Button Text"),
+        ("HERE_IS_LINK_TEXT",       "Link Message Text"),
+        ("LINK_EXPIRY_MINUTES",     "Link Expiry (min)"),
+        ("WELCOME_IMAGE_URL",       "Welcome Image URL"),
+        ("TRANSITION_STICKER",      "Transition Sticker ID"),
+        ("MAIN_CHANNEL_ID",         "Main Channel ID"),
+    ]
+
+    text = b(small_caps("🔧 environment variables")) + "\n\n"
+    rows = []
+    for key, label in ENV_KEYS:
+        val = get_setting(f"env_{key}", "") or ""
+        short = (val[:20] + "…") if len(val) > 20 else val
+        text += f"<b>{small_caps(label)}:</b> <code>{e(short) if short else 'not set'}</code>\n"
+        rows.append([InlineKeyboardButton(
+            f"✏️ {label}", callback_data=f"env_edit_{key}"
+        )])
+
+    rows.append([_back_btn("admin_back"), _close_btn()])
+    markup = InlineKeyboardMarkup(rows)
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
+
+
+# ── Auto-forward Source Panel ─────────────────────────────────────────────────
+
+async def show_fwd_source_panel(context, chat_id: int) -> None:
+    """Show auto-forward source channel management panel."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    from core.buttons import _btn, _back_btn, _close_btn
+    from core.helpers import safe_send_message
+    from database_dual import get_setting
+
+    fwd_source = get_setting("autoforward_source_chat", "") or "Not configured"
+    fwd_dest   = get_setting("autoforward_dest_chat", "")   or "Not configured"
+    fwd_on     = get_setting("autoforward_enabled", "false") == "true"
+
+    text = (
+        b(small_caps("🔄 auto-forward settings")) + "\n\n"
+        + bq(
+            f"<b>{small_caps('Status')}:</b> {'✅ ON' if fwd_on else '❌ OFF'}\n"
+            f"<b>{small_caps('Source')}:</b> <code>{e(fwd_source)}</code>\n"
+            f"<b>{small_caps('Destination')}:</b> <code>{e(fwd_dest)}</code>"
+        )
+    )
+
+    rows = [
+        [InlineKeyboardButton(
+            f"{'🔴 Disable' if fwd_on else '🟢 Enable'} Auto-Forward",
+            callback_data="fwd_toggle"
+        )],
+        [InlineKeyboardButton("📤 Set Source Chat", callback_data="fwd_set_chat")],
+        [InlineKeyboardButton("📥 Set Destination", callback_data="fwd_set_dest")],
+        [InlineKeyboardButton("🗑 Clear Config",    callback_data="fwd_clear")],
+        [_back_btn("admin_back"), _close_btn()],
+    ]
+    markup = InlineKeyboardMarkup(rows)
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
