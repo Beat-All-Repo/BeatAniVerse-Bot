@@ -414,6 +414,69 @@ async def button_handler(
         await button_handler(update, context, "admin_settings")
         return
 
+    # ── Auto-delete toggle ─────────────────────────────────────────────────────
+    if data == "toggle_auto_delete":
+        if not is_admin:
+            return
+        from database_dual import get_setting, set_setting
+        cur = get_setting("auto_delete_messages", "true")
+        new = "false" if cur == "true" else "true"
+        set_setting("auto_delete_messages", new)
+        await safe_answer(query, small_caps(f"auto-delete: {'on' if new == 'true' else 'off'}"))
+        from handlers.admin_panel import show_settings_panel
+        await show_settings_panel(update, context, query)
+        return
+
+    if data == "set_dm_del_delay":
+        if not is_admin:
+            return
+        from core.state_machine import user_states
+        user_states[uid] = "AWAITING_DM_DEL_DELAY"
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        from database_dual import get_setting
+        cur = get_setting("auto_delete_dm_delay", "120")
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("⏱ set dm auto-delete delay")) + "\n\n"
+            + bq(
+                small_caps(f"current: {cur}s") + "\n"
+                + small_caps("send number of seconds (e.g. 120 = 2 min, 0 = off)\n"
+                             "this applies to all bot messages in private chat")
+            ),
+            reply_markup=InlineKeyboardMarkup([[
+                bold_button(small_caps("🔙 cancel"), callback_data="admin_settings")
+            ]]),
+        )
+        return
+
+    if data == "set_gc_del_delay":
+        if not is_admin:
+            return
+        from core.state_machine import user_states
+        user_states[uid] = "AWAITING_GC_DEL_DELAY"
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        from database_dual import get_setting
+        cur = get_setting("auto_delete_gc_delay", "60")
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("⏱ set gc auto-delete delay")) + "\n\n"
+            + bq(
+                small_caps(f"current: {cur}s") + "\n"
+                + small_caps("send number of seconds (e.g. 60 = 1 min, 0 = off)\n"
+                             "posters and chatbot replies are never deleted")
+            ),
+            reply_markup=InlineKeyboardMarkup([[
+                bold_button(small_caps("🔙 cancel"), callback_data="admin_settings")
+            ]]),
+        )
+        return
+
     if data == "toggle_clean_gc":
         if not is_admin:
             return
@@ -555,7 +618,7 @@ async def button_handler(
 
     for cat_name in ("anime", "manga", "movie", "tvshow"):
         if data in (f"admin_category_settings_{cat_name}", f"settings_category_{cat_name}", f"cat_settings_{cat_name}"):
-            from handlers.post_gen import show_category_settings_menu
+            from handlers.admin_panel import show_category_settings_menu
             await show_category_settings_menu(context, chat_id, cat_name, query)
             return
 
@@ -591,7 +654,8 @@ async def button_handler(
         if data == f"cat_brand_clear_{cat_name}":
             if not is_admin:
                 return
-            from handlers.post_gen import update_category_field, show_category_settings_menu
+            from handlers.post_gen import update_category_field
+            from handlers.admin_panel import show_category_settings_menu
             update_category_field(cat_name, "branding", "")
             await safe_answer(query, "Branding cleared.")
             await show_category_settings_menu(context, chat_id, cat_name, query)
@@ -615,7 +679,8 @@ async def button_handler(
         if data == f"cat_btns_clear_{cat_name}":
             if not is_admin:
                 return
-            from handlers.post_gen import update_category_field, show_category_settings_menu
+            from handlers.post_gen import update_category_field
+            from handlers.admin_panel import show_category_settings_menu
             update_category_field(cat_name, "buttons", "[]")
             await safe_answer(query, "Buttons cleared.")
             await show_category_settings_menu(context, chat_id, cat_name, query)
@@ -625,20 +690,60 @@ async def button_handler(
             if not is_admin:
                 return
             await safe_edit_text(
-                query, b(f" Font Style for {e(cat_name.upper())}"),
+                query, b(small_caps(f"font style — {cat_name}")),
                 reply_markup=InlineKeyboardMarkup([
-                    [bold_button("Normal", callback_data=f"cat_font_set_{cat_name}_normal"),
-                     bold_button("Small Caps", callback_data=f"cat_font_set_{cat_name}_smallcaps")],
-                    [_back_btn("admin_category_settings"), _close_btn()],
+                    [bold_button(small_caps("normal"),     callback_data=f"cat_font_set_{cat_name}_normal"),
+                     bold_button(small_caps("small caps"), callback_data=f"cat_font_set_{cat_name}_smallcaps")],
+                    [_back_btn(f"cat_settings_{cat_name}"), _close_btn()],
                 ]),
             )
+            return
+
+        if data == f"cat_btn_style_{cat_name}":
+            if not is_admin:
+                return
+            try:
+                from database_dual import get_setting
+                cur_style = get_setting("button_style", "normal") or "normal"
+            except Exception:
+                cur_style = "normal"
+            await safe_edit_text(
+                query,
+                b(small_caps(f"button caption style — {cat_name}")) + "\n\n"
+                + bq(
+                    small_caps("choose how button labels are styled:") + "\n"
+                    + f"<b>{small_caps('Current')}:</b> <code>{e(cur_style)}</code>\n\n"
+                    + small_caps("normal") + " — Standard text\n"
+                    + small_caps("smallcaps") + " — sᴍᴀʟʟ ᴄᴀᴘs ᴛᴇxᴛ\n"
+                    + small_caps("custom") + " — Keep exact text you type"
+                ),
+                reply_markup=InlineKeyboardMarkup([
+                    [bold_button(small_caps("normal"),    callback_data=f"cat_btn_style_set_{cat_name}_normal"),
+                     bold_button(small_caps("smallcaps"), callback_data=f"cat_btn_style_set_{cat_name}_smallcaps")],
+                    [bold_button(small_caps("custom"),    callback_data=f"cat_btn_style_set_{cat_name}_custom")],
+                    [_back_btn(f"cat_settings_{cat_name}"), _close_btn()],
+                ]),
+            )
+            return
+
+        if data.startswith(f"cat_btn_style_set_{cat_name}_"):
+            if not is_admin:
+                return
+            style_val = data[len(f"cat_btn_style_set_{cat_name}_"):]
+            if style_val in ("normal", "smallcaps", "custom"):
+                from database_dual import set_setting
+                set_setting("button_style", style_val)
+                await safe_answer(query, small_caps(f"button style set to {style_val}"))
+                from handlers.admin_panel import show_category_settings_menu
+                await show_category_settings_menu(context, chat_id, cat_name, query)
             return
 
         if data.startswith(f"cat_font_set_{cat_name}_"):
             if not is_admin:
                 return
             font_val = data[len(f"cat_font_set_{cat_name}_"):]
-            from handlers.post_gen import update_category_field, show_category_settings_menu
+            from handlers.post_gen import update_category_field
+            from handlers.admin_panel import show_category_settings_menu
             update_category_field(cat_name, "font_style", font_val)
             await safe_answer(query, f"Font set to {font_val}")
             await show_category_settings_menu(context, chat_id, cat_name, query)
@@ -1188,8 +1293,78 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
+
         from handlers.admin_panel import show_env_panel
         await show_env_panel(context, chat_id)
+        return
+
+    # ── Set Main Channel (for send-to-main-channel feature) ───────────────────
+    if data == "admin_set_main_channel":
+        if not is_admin:
+            return
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        from core.state_machine import user_states
+        user_states[uid] = "AWAITING_MAIN_CHANNEL_ID"
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("📢 set main channel")) + "\n\n"
+            + bq(small_caps(
+                "forward any message from the channel, or send the channel @username / numeric ID.\n\n"
+                "this channel will receive posters when 'send to main channel' is tapped."
+            )),
+            reply_markup=InlineKeyboardMarkup([[
+                bold_button(small_caps("🔙 cancel"), callback_data="admin_settings")
+            ]]),
+        )
+        return
+
+    # ── pe_send_main: poster_engine send-to-main-channel callback ─────────────
+    if data.startswith("pe_send_main:"):
+        if not is_admin:
+            return
+        try:
+            main_ch_raw = None
+            from database_dual import get_setting
+            main_ch_raw = get_setting("main_channel_id", "")
+            if main_ch_raw:
+                main_ch_id = int(main_ch_raw)
+            else:
+                await safe_answer(query, small_caps("⚠️ no main channel set — go to settings → set main channel"), show_alert=True)
+                return
+        except Exception:
+            await safe_answer(query, small_caps("⚠️ invalid main channel id"), show_alert=True)
+            return
+
+        import json as _json
+        try:
+            from database_dual import get_setting
+            raw = get_setting(f"last_poster_{uid}", "")
+            pdata = _json.loads(raw) if raw else {}
+        except Exception:
+            pdata = {}
+
+        src_chat = pdata.get("chat_id")
+        src_msg  = pdata.get("msg_id")
+        caption  = pdata.get("caption", "")
+
+        if not src_chat or not src_msg:
+            await safe_answer(query, small_caps("❌ poster not found — regenerate and try again"), show_alert=True)
+            return
+
+        try:
+            await context.bot.copy_message(
+                chat_id=main_ch_id,
+                from_chat_id=src_chat,
+                message_id=src_msg,
+                caption=caption,
+                parse_mode="HTML",
+            )
+            await safe_answer(query, small_caps("✅ sent to main channel!"))
+        except Exception as exc:
+            await safe_answer(query, small_caps(f"❌ failed: {str(exc)[:80]}"), show_alert=True)
         return
 
     if data.startswith("env_edit_"):
@@ -1543,20 +1718,53 @@ async def button_handler(
     if data == "admin_filter_settings":
         if not is_admin:
             return
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
         from core.filters_system import filters_config
-        dm_on = filters_config["global"].get("dm", True)
+        dm_on  = filters_config["global"].get("dm", True)
         grp_on = filters_config["global"].get("group", True)
+
+        # Build channel+anime list from DB
+        ch_lines = ""
+        try:
+            from database_dual import get_all_force_sub_channels, get_all_anime_channel_links
+            channels = get_all_force_sub_channels() or []
+            links    = get_all_anime_channel_links() or []
+            # Map channel_id → anime titles
+            ch_anime: dict = {}
+            for row in links:
+                # row = (id, anime_title, channel_id, channel_title, link_id, created_at)
+                an_title = row[1] if len(row) > 1 else ""
+                cid      = row[2] if len(row) > 2 else ""
+                if an_title and cid:
+                    ch_anime.setdefault(str(cid), []).append(an_title.title())
+            for ch in channels:
+                cid_v  = ch[0] if isinstance(ch, (list, tuple)) else ch.get("channel_id", "")
+                cname  = ch[1] if isinstance(ch, (list, tuple)) else ch.get("channel_title", "")
+                animes = ch_anime.get(str(cid_v), [])
+                an_str = ", ".join(animes[:3]) if animes else small_caps("no anime linked")
+                ch_lines += f"• <b>{e(str(cname))}</b>: <i>{e(an_str)}</i>\n"
+        except Exception:
+            ch_lines = bq(small_caps("could not load channel list"))
+
         text = (
-            b("Filter Settings") + "\n\n"
-            f"<b>DM:</b> {'ON' if dm_on else 'OFF'}\n"
-            f"<b>GROUP:</b> {'ON' if grp_on else 'OFF'}"
+            b(small_caps("🔧 filter settings")) + "\n\n"
+            + bq(
+                f"<b>{small_caps('DM Filter')}:</b> {'✅ ON' if dm_on else '❌ OFF'}\n"
+                f"<b>{small_caps('Group Filter')}:</b> {'✅ ON' if grp_on else '❌ OFF'}"
+            )
+            + (f"\n\n<b>{small_caps('📢 channels & anime:')}</b>\n" + ch_lines if ch_lines else "")
         )
         keyboard = [
-            [bold_button("TOGGLE DM", callback_data="filter_toggle_dm")],
-            [bold_button("TOGGLE GROUP", callback_data="filter_toggle_group")],
-            [_back_btn("admin_back")],
+            [bold_button(small_caps("toggle dm filter"),    callback_data="filter_toggle_dm"),
+             bold_button(small_caps("toggle group filter"), callback_data="filter_toggle_group")],
+            [bold_button(small_caps("📢 manage channels"),  callback_data="manage_force_sub")],
+            [bold_button(small_caps("🎌 channel anime links"), callback_data="admin_anime_links")],
+            [_back_btn("admin_back"), _close_btn()],
         ]
-        await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await safe_send_message(context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if data == "filter_toggle_dm":
