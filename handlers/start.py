@@ -37,6 +37,75 @@ from core.logging_setup import logger
 
 # ── Loading animation ─────────────────────────────────────────────────────────
 
+
+# ── Fire animation (welcome screen) ───────────────────────────────────────────
+
+async def _send_fire_animation(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+) -> None:
+    """
+    Sends a fire-style animation before the welcome panel.
+    Priority: DB sticker → TRANSITION_STICKER_ID → emoji frame animation → silent skip.
+    Auto-deletes after brief display so it doesn't clutter chat.
+    """
+    # Try DB-stored sticker first
+    fire_sticker_id = ""
+    try:
+        from database_dual import get_setting
+        fire_sticker_id = get_setting("fire_sticker_id", "") or ""
+        if not fire_sticker_id:
+            fire_sticker_id = get_setting("loading_sticker_id", "") or ""
+    except Exception:
+        pass
+
+    if not fire_sticker_id:
+        fire_sticker_id = TRANSITION_STICKER_ID or ""
+
+    # Try sending sticker
+    if fire_sticker_id:
+        try:
+            stk_msg = await context.bot.send_sticker(chat_id, fire_sticker_id)
+            await asyncio.sleep(1.2)
+            try:
+                await context.bot.delete_message(chat_id, stk_msg.message_id)
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
+
+    # Fallback: emoji fire frame animation
+    _FIRE_FRAMES = ["🔥", "🔥🔥", "🔥🔥🔥", "🔥🔥", "🔥"]
+    fire_msg = None
+    try:
+        fire_msg = await context.bot.send_message(
+            chat_id,
+            _FIRE_FRAMES[0],
+            parse_mode=ParseMode.HTML,
+            disable_notification=True,
+        )
+    except Exception:
+        return
+
+    if fire_msg:
+        for frame in _FIRE_FRAMES[1:]:
+            await asyncio.sleep(0.15)
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=fire_msg.message_id,
+                    text=frame,
+                )
+            except Exception:
+                break
+        await asyncio.sleep(0.3)
+        try:
+            await context.bot.delete_message(chat_id, fire_msg.message_id)
+        except Exception:
+            pass
+
+
 async def loading_animation_start(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
@@ -228,7 +297,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         b("🔄 Getting your link via our server bot…"),
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton(
-                                "📥 Get Your Link",
+                                " Get Your Link",
                                 url=f"https://t.me/{clone_uname}?start={link_id}"
                             )
                         ]]),
@@ -263,6 +332,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     ]
     markup = InlineKeyboardMarkup(keyboard)
 
+    # ── Fire animation before welcome panel ───────────────────────────────────
+    await _send_fire_animation(context, chat_id)
+
     _sent_start_msg = None
     try:
         _sent_start_msg = await context.bot.copy_message(
@@ -287,18 +359,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     welcome_caption = (
-        b(f"✨ Welcome to {e(BOT_NAME)}!") + "\n\n"
-        + bq(b("Your gateway to all things Anime, Manga & Movies!"))
+        b(small_caps(f"✨ ᴡᴇʟᴄᴏᴍᴇ ᴛᴏ {e(BOT_NAME)}!")) + "\n\n"
+        + bq(
+            b(small_caps("ʏᴏᴜʀ ɢᴀᴛᴇᴡᴀʏ ᴛᴏ ᴀʟʟ ᴛʜɪɴɢs ᴀɴɪᴍᴇ, ᴍᴀɴɢᴀ & ᴍᴏᴠɪᴇs!"))
+        )
     )
 
     if WELCOME_IMAGE_URL:
         try:
-            await context.bot.send_photo(
+            sent_photo = await context.bot.send_photo(
                 chat_id, WELCOME_IMAGE_URL,
                 caption=welcome_caption,
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
+                message_effect_id=5104841245755180586,
             )
+            if sent_photo:
+                try:
+                    await context.bot.set_message_reaction(
+                        chat_id=chat_id,
+                        message_id=sent_photo.message_id,
+                        reaction=[{"type": "emoji", "emoji": "🔥"}],
+                        is_big=True,
+                    )
+                except Exception:
+                    pass
             return
         except Exception:
             pass
@@ -320,8 +405,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         try:
             await context.bot.set_message_reaction(
                 chat_id=chat_id, message_id=_fb_msg.message_id,
-                reaction=[{"type": "emoji", "emoji": "✨"}], is_big=False,
+                reaction=[{"type": "emoji", "emoji": "🔥"}], is_big=True,
             )
+        except Exception:
+            pass
+        # Auto-delete welcome message in DM after delay (photo/poster excluded by middleware)
+        try:
+            from core.auto_delete import schedule_delete_msg
+            await schedule_delete_msg(context.bot, _fb_msg)
         except Exception:
             pass
 
