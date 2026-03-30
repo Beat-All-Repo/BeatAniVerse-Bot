@@ -106,12 +106,21 @@ LANG_LABELS = {cb: label for label, cb in LANG_OPTIONS}
 # ── Size / type options ───────────────────────────────────────────────────────
 
 SIZE_OPTIONS = [
-    ("🖼 Poster (2:3)",      "size_poster",    "ani"),
-    ("🏞 Landscape (16:9)", "size_landscape", "net"),
-    ("🎌 Banner (3:1)",     "size_banner",    "dark"),
-    ("🎬 Custom",            "size_custom",    None),
+    # Original palette templates
+    ("🎌 ᴀɴɪᴍᴇ",            "size_ani",       "ani"),
+    ("🔴 ɴᴇᴛꜰʟɪx",          "size_net",       "net"),
+    ("🌑 ᴅᴀʀᴋ",             "size_dark",      "dark"),
+    ("🍊 ᴄʀᴜɴᴄʜʏʀᴏʟʟ",     "size_crun",      "crun"),
+    ("☀️ ʟɪɢʜᴛ",            "size_light",     "light"),
+    ("✨ ᴍᴏᴅᴇʀɴ",           "size_mod",       "mod"),
+    # Reference-image layouts (distinct structure)
+    ("📺 sᴛʀᴇᴀᴍ",           "size_stream",    "stream"),
+    ("🎴 ᴠᴇssᴇʟ",           "size_vessel",    "vessel"),
+    ("🎞 sᴘʟᴀsʜ",           "size_splash",    "splash"),
+    ("⬛ ᴏᴅ3ɴ",             "size_od3n",      "od3n"),
 ]
 SIZE_CB_TO_TEMPLATE = {cb: tmpl for _, cb, tmpl in SIZE_OPTIONS if tmpl}
+
 
 
 # ── Abbreviation map ─────────────────────────────────────────────────────────
@@ -444,7 +453,7 @@ async def _generate_poster_buf(
         return None
 
 
-def _build_caption(data: Dict) -> str:
+def _build_caption(data: Dict, lang: str = "") -> str:
     t_d    = data.get("title", {}) or {}
     eng    = t_d.get("english") or t_d.get("romaji") or "Unknown"
     native = t_d.get("native", "")
@@ -456,10 +465,54 @@ def _build_caption(data: Dict) -> str:
     stnode = ((data.get("studios") or {}).get("nodes") or [])
     studio = stnode[0].get("name", "") if stnode else ""
 
+    # Try custom caption template from category settings
+    try:
+        from handlers.post_gen import get_category_settings
+        import inspect as _inspect
+        # Determine category from caller context (best effort)
+        _cat = "anime"
+        _frame = _inspect.currentframe()
+        if _frame and _frame.f_back:
+            _local_media_type = _frame.f_back.f_locals.get("media_type", "ANIME")
+            if isinstance(_local_media_type, str):
+                _cat = {"ANIME": "anime", "MANGA": "manga", "MOVIE": "movie", "TV": "tvshow"}.get(
+                    _local_media_type.upper(), "anime")
+        settings = get_category_settings(_cat)
+        tmpl = settings.get("caption_template", "")
+        if tmpl:
+            # Resolve {link} tag
+            _join_link = ""
+            try:
+                from database_dual import get_anime_channel_links, get_setting
+                from core.config import BOT_USERNAME, PUBLIC_ANIME_CHANNEL_URL
+                _al = get_anime_channel_links(eng)
+                if _al and _al[0][2] and BOT_USERNAME:
+                    _join_link = f"https://t.me/{BOT_USERNAME}?start={_al[0][2]}"
+                if not _join_link:
+                    _join_link = get_setting("env_PUBLIC_ANIME_CHANNEL_URL", "") or PUBLIC_ANIME_CHANNEL_URL
+            except Exception:
+                pass
+            cap = (tmpl.replace("{title}", _e(eng))
+                      .replace("{native}", _e(native))
+                      .replace("{genres}", _e(genres))
+                      .replace("{score}", str(score))
+                      .replace("{status}", _e(status))
+                      .replace("{episodes}", str(eps))
+                      .replace("{format}", _e(fmt))
+                      .replace("{studio}", _e(studio))
+                      .replace("{lang}", _e(lang) if lang else "")
+                      .replace("{language}", _e(lang) if lang else "")
+                      .replace("{link}", _join_link))
+            return cap[:1024]
+    except Exception:
+        pass
+
     cap = f"<b>{_e(eng)}</b>"
     if native:
         cap += f"\n<i>{_e(native)}</i>"
     cap += "\n\n"
+    if lang:
+        cap += f"» <b>{_sc('Audio')}:</b> {_e(lang)}\n"
     if genres:
         cap += f"» <b>{_sc('Genre')}:</b> {_e(genres)}\n"
     if score and str(score) not in ("?", "0", "None"):
@@ -478,13 +531,64 @@ def _build_caption(data: Dict) -> str:
     return cap[:1024]
 
 
-def _info_kb(data: Dict) -> InlineKeyboardMarkup:
-    site = data.get("siteUrl", "")
-    row  = []
+def _info_kb(data: Dict, lang: str = "") -> InlineKeyboardMarkup:
+    from core.config import PUBLIC_ANIME_CHANNEL_URL, JOIN_BTN_TEXT
+    site  = data.get("siteUrl", "")
+    t_d   = data.get("title", {}) or {}
+    title = t_d.get("english") or t_d.get("romaji") or ""
+
+    rows: List[List] = []
+
+    # Row 1: AniList info button
+    info_row = []
     if site:
-        row.append(InlineKeyboardButton(_sc("📋 Info"), url=site))
-    row.append(InlineKeyboardButton(_sc("📢 BeatAnime"), url="https://t.me/BeatAnime"))
-    return InlineKeyboardMarkup([row])
+        info_row.append(InlineKeyboardButton(_sc("📋 ɪɴꜰᴏ"), url=site))
+    if info_row:
+        rows.append(info_row)
+
+    # Row 2: "Join Now to Watch" button — try to get join_request link from DB
+    join_url = None
+    if title:
+        try:
+            from database_dual import get_anime_channel_links
+            links = get_anime_channel_links(title)
+            if links:
+                # links = [(channel_id, channel_title, link_id), ...]
+                link_id = links[0][2] if len(links[0]) > 2 else None
+                if link_id:
+                    try:
+                        from database_dual import get_link_by_id
+                        lrow = get_link_by_id(link_id)
+                        if lrow:
+                            join_url = lrow.get("url") or lrow[3] if isinstance(lrow, (list, tuple)) else None
+                    except Exception:
+                        pass
+                if not join_url:
+                    # Try channel invite link directly
+                    cid = links[0][0]
+                    try:
+                        from database_dual import get_setting
+                        join_url = get_setting(f"channel_invite_{cid}", "")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Fallback to main anime channel
+    if not join_url:
+        join_url = PUBLIC_ANIME_CHANNEL_URL
+
+    try:
+        from database_dual import get_setting
+        join_txt = get_setting("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
+    except Exception:
+        join_txt = JOIN_BTN_TEXT
+
+    rows.append([InlineKeyboardButton(
+        f"ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=join_url
+    )])
+
+    return InlineKeyboardMarkup(rows)
 
 
 # ── UI flow helpers ───────────────────────────────────────────────────────────
@@ -546,12 +650,23 @@ async def _show_similar_panel(
         InlineKeyboardButton(_sc("❌ Cancel"),         callback_data="anpick_cancel"),
     ])
 
-    await msg.reply_text(
-        _b("🎌 select exact title") + "\n"
-        + _bq(_sc("pick the correct title for the poster:")),
+    # Delete any existing flow panels before sending new
+    for key in ("_sim_panel_id", "_lang_panel_id", "_size_panel_id"):
+        old_mid = context.user_data.pop(key, None)
+        if old_mid:
+            try:
+                await context.bot.delete_message(msg.chat_id, old_mid)
+            except Exception:
+                pass
+
+    sent_sim = await msg.reply_text(
+        _b("🎌 sᴇʟᴇᴄᴛ ᴇxᴀᴄᴛ ᴛɪᴛʟᴇ") + "\n"
+        + _bq(_sc("ᴘɪᴄᴋ ᴛʜᴇ ᴄᴏʀʀᴇᴄᴛ ᴛɪᴛʟᴇ ꜰᴏʀ ᴛʜᴇ ᴘᴏsᴛᴇʀ:")),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(btns),
     )
+    if sent_sim:
+        context.user_data["_sim_panel_id"] = sent_sim.message_id
 
 
 async def _show_language_panel(
@@ -575,11 +690,22 @@ async def _show_language_panel(
         rows.append(row)
     rows.append([InlineKeyboardButton(_sc("CANCEL"), callback_data="anpick_cancel")])
 
-    await msg.reply_text(
-        _b("🎧 select audio language"),
+    # Delete previous flow panel
+    for key in ("_sim_panel_id", "_lang_panel_id", "_size_panel_id"):
+        old_mid = context.user_data.pop(key, None)
+        if old_mid:
+            try:
+                await context.bot.delete_message(msg.chat_id, old_mid)
+            except Exception:
+                pass
+
+    sent_lang = await msg.reply_text(
+        _b("🎧 sᴇʟᴇᴄᴛ ᴀᴜᴅɪᴏ ʟᴀɴɢᴜᴀɢᴇ"),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(rows),
     )
+    if sent_lang:
+        context.user_data["_lang_panel_id"] = sent_lang.message_id
 
 
 async def _show_size_panel(
@@ -603,11 +729,22 @@ async def _show_size_panel(
         rows.append(row)
     rows.append([InlineKeyboardButton(_sc("CANCEL"), callback_data="anpick_cancel")])
 
-    await msg.reply_text(
-        _b("📐 select poster type"),
+    # Delete previous flow panel
+    for key in ("_sim_panel_id", "_lang_panel_id", "_size_panel_id"):
+        old_mid = context.user_data.pop(key, None)
+        if old_mid:
+            try:
+                await context.bot.delete_message(msg.chat_id, old_mid)
+            except Exception:
+                pass
+
+    sent_size = await msg.reply_text(
+        _b("📐 sᴇʟᴇᴄᴛ ᴘᴏsᴛᴇʀ ᴛʏᴘᴇ / sɪᴢᴇ"),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(rows),
     )
+    if sent_size:
+        context.user_data["_size_panel_id"] = sent_size.message_id
 
 
 # ── Poster delivery — 2 separate messages ────────────────────────────────────
@@ -644,8 +781,9 @@ async def _deliver_poster(
         except Exception:
             pass
 
-    caption = _build_caption(data)
-    kb      = _info_kb(data)
+    lang    = context.user_data.get("selected_lang", "")
+    caption = _build_caption(data, lang=lang)
+    kb      = _info_kb(data, lang=lang)
 
     sent_poster = None
 
@@ -689,18 +827,27 @@ async def _deliver_poster(
     # ── Message 2: Custom Thumbnail prompt (separate message, not joined) ─────
     thumb_kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(_sc("🔜 NEXT IMG"),  callback_data="anthmb_next"),
-            InlineKeyboardButton(_sc("SKIP"),       callback_data="anthmb_skip"),
+            InlineKeyboardButton(_sc("🔜 ɴᴇxᴛ ɪᴍɢ"),    callback_data="anthmb_next"),
+            InlineKeyboardButton(_sc("sᴋɪᴘ"),             callback_data="anthmb_skip"),
         ],
-        [InlineKeyboardButton(_sc("CANCEL"),        callback_data="anthmb_cancel")],
+        [InlineKeyboardButton(_sc("📤 sᴇɴᴅ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ"), callback_data="anthmb_send_main")],
+        [InlineKeyboardButton(_sc("❌ ᴄᴀɴᴄᴇʟ"),         callback_data="anthmb_cancel")],
     ])
 
-    await msg.reply_text(
+    sent_thumb_prompt = await msg.reply_text(
         "📸 <b>Cᴜsᴛᴏᴍ Tʜᴜᴍʙɴᴀɪʟ</b>\n\n"
         "Sᴇɴᴅ ᴍᴇ ᴀ ᴄᴜsᴛᴏᴍ ᴛʜᴜᴍʙɴᴀɪʟ ɪᴍᴀɢᴇ, ᴏʀ ᴄʟɪᴄᴋ Sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴛʜɪs ᴘᴏsᴛᴇʀ.",
         parse_mode=ParseMode.HTML,
         reply_markup=thumb_kb,
     )
+    # Auto-delete the thumbnail prompt (NOT the poster itself)
+    if sent_thumb_prompt:
+        try:
+            from core.auto_delete import schedule_delete_msg
+            await schedule_delete_msg(msg.get_bot() if hasattr(msg, "get_bot") else context.bot,
+                                      sent_thumb_prompt)
+        except Exception:
+            pass
 
 
 # ── Callback handler ──────────────────────────────────────────────────────────
@@ -812,7 +959,8 @@ async def _anime_callback(
         if not data:
             try:
                 await msg.reply_text(
-                    _b(f"❌ not found: {_e(search_queries[0])}"),
+                    _b(f"❌ ɴᴏᴛ ꜰᴏᴜɴᴅ:") + f" <code>{_e(search_queries[0])}</code>\n"
+                    + _bq(_sc("ᴛʀʏ ᴀ ᴅɪꜰꜰᴇʀᴇɴᴛ sᴘᴇʟʟɪɴɢ ᴏʀ ʙʀᴀᴋᴇᴛ (ᴇ.ɢ. /anime demon slayer)")),
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
@@ -930,9 +1078,63 @@ async def _anime_callback(
                 pass
         context.user_data.clear()
         try:
-            await query.answer(_sc("cancelled"))
+            await query.answer(_sc("ᴄᴀɴᴄᴇʟʟᴇᴅ"))
         except Exception:
             pass
+        return
+
+    # ── Send poster to main channel ───────────────────────────────────────────
+    if cb == "anthmb_send_main":
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        # Get main channel id from settings
+        main_ch_id = None
+        try:
+            from database_dual import get_setting
+            main_ch_id = get_setting("main_channel_id", "")
+            if main_ch_id:
+                main_ch_id = int(main_ch_id)
+        except Exception:
+            pass
+        if not main_ch_id:
+            try:
+                await query.answer(_sc("⚠️ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ ɴᴏᴛ sᴇᴛ — ᴜsᴇ /settings ᴛᴏ ᴄᴏɴꜰɪɢᴜʀᴇ"), show_alert=True)
+            except Exception:
+                pass
+            return
+        prev_msg_id  = context.user_data.get("poster_msg_id")
+        prev_chat_id = context.user_data.get("poster_chat_id")
+        data_d   = context.user_data.get("poster_data", {})
+        lang     = context.user_data.get("selected_lang", "")
+        caption  = _build_caption(data_d, lang=lang) if data_d else ""
+        kb       = _info_kb(data_d, lang=lang) if data_d else None
+        sent_ok  = False
+        if prev_msg_id and prev_chat_id:
+            try:
+                await query.bot.copy_message(
+                    chat_id=main_ch_id,
+                    from_chat_id=prev_chat_id,
+                    message_id=prev_msg_id,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+                sent_ok = True
+            except Exception as exc:
+                logger.debug(f"send_to_main copy: {exc}")
+        if sent_ok:
+            try:
+                await query.answer(_sc("✅ sᴇɴᴛ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ!"), show_alert=False)
+            except Exception:
+                pass
+        else:
+            try:
+                await query.answer(_sc("❌ ꜰᴀɪʟᴇᴅ ᴛᴏ sᴇɴᴅ — ᴄʜᴇᴄᴋ ʙᴏᴛ ᴘᴇʀᴍɪssɪᴏɴs"), show_alert=True)
+            except Exception:
+                pass
+        context.user_data.pop("awaiting_thumbnail", None)
         return
 
 
@@ -1020,20 +1222,29 @@ async def anime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /manga flow — same as /anime:
+    1. Similar panel  2. Language panel  3. Size panel  4. Poster
+    """
     if not context.args:
         await update.message.reply_text(
-            _b("usage:") + " /manga &lt;name&gt;", parse_mode=ParseMode.HTML
+            _b("ᴜsᴀɢᴇ:") + " /manga &lt;name&gt;\n"
+            + _bq(
+                "• /manga one piece\n"
+                "• /manga demon slayer\n"
+                "• /manga berserk"
+            ),
+            parse_mode=ParseMode.HTML,
         )
         return
     q = " ".join(context.args)
-    # Set flag: deliver as document (PDF-style) not photo
     context.user_data.update({
         "media_type":  "MANGA",
         "anime_query": q,
         "season_num":  None,
-        "deliver_as_document": True,  # manga posters sent as document/PDF
     })
     await _show_similar_panel(update, context, q, None)
+
 
 
 async def movie_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1511,6 +1722,30 @@ async def inline_search_anime(
 
         if cover:
             try:
+                # Build join-now button using anime channel links
+                watch_rows = []
+                try:
+                    from database_dual import get_anime_channel_links
+                    alinks = get_anime_channel_links(title)
+                    for _cid, _ctitle, _lid in (alinks or []):
+                        if _ctitle:  # Only show channels that have anime name set
+                            from core.config import PUBLIC_ANIME_CHANNEL_URL
+                            bot_uname = ""
+                            try:
+                                from core.config import BOT_USERNAME
+                                bot_uname = BOT_USERNAME
+                            except Exception:
+                                pass
+                            deep_url = f"https://t.me/{bot_uname}?start={_lid}" if bot_uname and _lid else PUBLIC_ANIME_CHANNEL_URL
+                            watch_rows.append([InlineKeyboardButton(
+                                f"▶ {_ctitle[:25]}", url=deep_url
+                            )])
+                except Exception:
+                    pass
+                from core.config import PUBLIC_ANIME_CHANNEL_URL
+                if not watch_rows:
+                    watch_rows = [[InlineKeyboardButton("ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=PUBLIC_ANIME_CHANNEL_URL)]]
+                watch_kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 ᴀɴɪʟɪsᴛ", url=site)]] + watch_rows)
                 results.append(InlineQueryResultPhoto(
                     id=str(uuid4()),
                     photo_url=cover,
@@ -1519,7 +1754,7 @@ async def inline_search_anime(
                     description=f"{'⭐ ' + sc_str if score else ''} • {status} • {fmt}",
                     caption=cap,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
+                    reply_markup=watch_kb,
                 ))
                 continue
             except Exception:
