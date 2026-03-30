@@ -112,18 +112,52 @@ def update_category_field(category: str, field: str, value: Any) -> bool:
         return False
 
 
-def build_buttons_from_settings(settings: Dict) -> Optional[InlineKeyboardMarkup]:
-    """Convert settings buttons list to InlineKeyboardMarkup."""
+def build_buttons_from_settings(
+    settings: Dict,
+    anime_title: str = "",
+    join_url: str = "",
+) -> Optional[InlineKeyboardMarkup]:
+    """
+    Convert settings buttons list to InlineKeyboardMarkup.
+    Supports:
+      - {link} placeholder → replaced with join_url
+      - Button text styles: normal | smallcaps | custom
+      - Emoji in button labels
+      - Colour prefixes: #g #r #b #p #y
+    """
     btns = settings.get("buttons", [])
     if not btns:
         return None
+
+    # Determine button text style from settings
+    btn_style = settings.get("button_style", "normal")
+    try:
+        from database_dual import get_setting
+        btn_style = get_setting("button_style", btn_style) or btn_style
+    except Exception:
+        pass
+
+    def _apply_btn_style(text: str) -> str:
+        if btn_style == "smallcaps":
+            return small_caps(text)
+        # "normal" or "custom" — keep as-is (custom means user sets exactly what they want)
+        return text
+
     keyboard = []
     row = []
     for i, btn in enumerate(btns):
         label = btn.get("text", "Link")
-        url = btn.get("url", "")
+        url   = btn.get("url", "")
         if not url:
             continue
+
+        # Resolve {link} placeholder in URL
+        if "{link}" in url:
+            url = url.replace("{link}", join_url or "")
+        if not url:
+            continue
+
+        # Colour prefix → prepend icon
         for pfx, icon in [
             ("#g ", "🟢 "), ("#r ", "🔴 "), ("#b ", "🔵 "),
             ("#p ", "🟣 "), ("#y ", "🟡 ")
@@ -131,14 +165,17 @@ def build_buttons_from_settings(settings: Dict) -> Optional[InlineKeyboardMarkup
             if label.startswith(pfx):
                 label = icon + label[len(pfx):]
                 break
+
+        label = _apply_btn_style(label)
         row.append(InlineKeyboardButton(label, url=url))
-        if len(row) == 2 or btn.get("newline"):
+        if len(row) == 2 or i == len(btns) - 1:
             keyboard.append(row)
             row = []
+
     if row:
         keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard) if keyboard else None
 
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 async def add_watermark(
     image_url: str, text: str, position: str = "center"
