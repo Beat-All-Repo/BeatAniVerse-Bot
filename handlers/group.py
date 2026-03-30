@@ -87,21 +87,22 @@ async def group_message_handler(
         auto_del = True
         del_delay = 60
 
-    if auto_del:
-        async def _del_user_cmd(msg=update.message):
-            await asyncio.sleep(5)
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-        asyncio.create_task(_del_user_cmd())
+    async def _del_user_cmd(msg=update.message):
+        # Delete user's command message in GC after 5s always (clean chat)
+        await asyncio.sleep(5)
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+    asyncio.create_task(_del_user_cmd())
 
     async def _group_post(category: str, query_text: str) -> None:
         from handlers.media_cmds import generate_and_send_post
         sent = await generate_and_send_post(context, chat_id, category, query_text)
-        if auto_del and sent:
-            from core.helpers import gc_auto_delete
-            await gc_auto_delete(context.bot, chat_id, sent, delay=del_delay)
+        # Never auto-delete poster photos — only delete text/non-photo responses
+        if sent:
+            from core.auto_delete import schedule_delete_msg
+            await schedule_delete_msg(context.bot, sent, delay=del_delay)
 
     for prefix, category in [
         ("/anime ", "anime"), ("/manga ", "manga"),
