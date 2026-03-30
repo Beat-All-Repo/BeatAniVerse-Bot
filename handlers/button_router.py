@@ -800,13 +800,86 @@ async def button_handler(
         if data == f"cat_thumbnail_{cat_name}":
             if not is_admin:
                 return
-            user_states[uid] = SET_CATEGORY_THUMBNAIL
-            context.user_data["editing_category"] = cat_name
-            await safe_edit_text(
-                query, b(f" Set Thumbnail for {e(cat_name.upper())}") + "\n\n"
-                + bq(b("Send the thumbnail URL, or 'default' to reset.")),
-                reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data=f"admin_category_settings_{cat_name}")]]),
+            # Show poster LAYOUT/STYLE template picker — not thumbnail URL
+            try:
+                from handlers.post_gen import get_category_settings
+                cur_tmpl = get_category_settings(cat_name).get("template_name", "ani")
+            except Exception:
+                cur_tmpl = "ani"
+
+            # All available poster visual templates
+            _POSTER_TEMPLATES = {
+                # Palette templates (same structure, different colours)
+                "ani":    ("🎌", "ᴀɴɪᴍᴇ ᴄʟᴀssɪᴄ",    "Dark blue · AniList · Landscape bleed"),
+                "dark":   ("🌑", "ᴅᴀʀᴋ ᴘᴜʀᴘʟᴇ",       "Deep dark · Purple accent · Minimal"),
+                "light":  ("☀️", "ᴄʟᴇᴀɴ ʟɪɢʜᴛ",       "White BG · Blue accent · Clean look"),
+                "crun":   ("🍊", "ᴄʀᴜɴᴄʜʏʀᴏʟʟ",        "Orange accent · CR logo · Warm tone"),
+                "net":    ("🔴", "ɴᴇᴛꜰʟɪx",             "Pure black · Red accent · NF logo"),
+                "mod":    ("✨", "ᴍᴏᴅᴇʀɴ ᴛᴇᴀʟ",        "Dark BG · Teal accent · Sleek edges"),
+                "anim":   ("📗", "ᴍᴀɴɢᴀ ɢʀᴇᴇɴ",        "Dark green · AniList · Manga style"),
+                "netm":   ("🟥", "ɴᴇᴛꜰʟɪx ᴍᴀɴɢᴀ",      "Netflix style for manga"),
+                # Reference-image layouts (completely different structure)
+                "stream": ("📺", "sᴛʀᴇᴀᴍ",             "Cover right · Episode card · Branding badge"),
+                "vessel": ("🎴", "ᴠᴇssᴇʟ",             "Split panel · Portrait cover · Vertical brand"),
+                "splash": ("🎞", "sᴘʟᴀsʜ",             "Full bleed · Cinematic · Title centred"),
+                "od3n":   ("⬛", "ᴏᴅ3ɴ",               "Character centre · Vertical title · Info right"),
+            }
+            # Filter to category-relevant templates
+            _CAT_TEMPLATES = {
+                "anime":  ["ani", "stream", "od3n", "vessel", "splash", "dark", "light", "crun", "net", "mod"],
+                "manga":  ["anim", "vessel", "splash", "netm", "dark", "light", "mod", "stream", "od3n"],
+                "movie":  ["stream", "net", "od3n", "splash", "dark", "light", "vessel", "mod", "crun", "ani"],
+                "tvshow": ["stream", "net", "od3n", "splash", "dark", "light", "vessel", "mod", "crun", "ani"],
+            }
+            tmpl_keys = _CAT_TEMPLATES.get(cat_name, list(_POSTER_TEMPLATES.keys()))
+
+            text = (
+                b(small_caps(f"🎨 poster layout — {cat_name}")) + "\n\n"
+                + bq(
+                    small_caps("choose a visual layout style for") + f" <b>{e(cat_name)}</b>\n"
+                    + small_caps("current: ") + f"<code>{e(cur_tmpl)}</code>"
+                ) + "\n\n"
             )
+            for tk in tmpl_keys:
+                em, lbl, desc = _POSTER_TEMPLATES.get(tk, ("🖼", tk, ""))
+                active = " ✅" if tk == cur_tmpl else ""
+                text += f"{em} <b>{lbl}</b>{active}\n<i>{small_caps(desc)}</i>\n\n"
+
+            rows = []
+            row = []
+            for tk in tmpl_keys:
+                em, lbl, _ = _POSTER_TEMPLATES.get(tk, ("🖼", tk, ""))
+                active = "✅" if tk == cur_tmpl else ""
+                btn_lbl = f"{em} {active}" if active else em
+                row.append(bold_button(f"{btn_lbl} {small_caps(tk)}", callback_data=f"cat_tmpl_set_{cat_name}_{tk}"))
+                if len(row) == 3:
+                    rows.append(row); row = []
+            if row: rows.append(row)
+            rows.append([_back_btn(f"cat_settings_{cat_name}"), _close_btn()])
+
+            try:
+                await query.delete_message()
+            except Exception:
+                pass
+            await safe_send_message(
+                context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(rows)
+            )
+            return
+
+        # ── Poster template selected ────────────────────────────────────────────
+        if data.startswith(f"cat_tmpl_set_{cat_name}_"):
+            if not is_admin:
+                return
+            new_tmpl = data[len(f"cat_tmpl_set_{cat_name}_"):]
+            valid = ["ani","dark","light","crun","net","mod","anim","netm","lightm","darkm","netcr","stream","vessel","splash","od3n"]
+            if new_tmpl not in valid:
+                await safe_answer(query, small_caps("❌ unknown template"))
+                return
+            from handlers.post_gen import update_category_field
+            update_category_field(cat_name, "template_name", new_tmpl)
+            await safe_answer(query, small_caps(f"✅ template set to {new_tmpl}"))
+            from handlers.admin_panel import show_category_settings_menu
+            await show_category_settings_menu(context, chat_id, cat_name, query)
             return
 
     # ── User management ────────────────────────────────────────────────────────
@@ -1268,7 +1341,7 @@ async def button_handler(
                     if manga:
                         caption_text, cover_url = MangaDexClient.format_manga_info(manga)
                         markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton("📖 Read on MangaDex", url=f"https://mangadex.org/title/{raw_id}"),
+                            InlineKeyboardButton(" Read on MangaDex", url=f"https://mangadex.org/title/{raw_id}"),
                         ], [bold_button("Track This Manga", callback_data=f"mdex_track_{raw_id}")]])
                         if cover_url:
                             await safe_send_photo(context.bot, chat_id, cover_url, caption=caption_text, reply_markup=markup)
@@ -1310,7 +1383,7 @@ async def button_handler(
         user_states[uid] = "AWAITING_MAIN_CHANNEL_ID"
         await safe_send_message(
             context.bot, chat_id,
-            b(small_caps("📢 set main channel")) + "\n\n"
+            b(small_caps(" set main channel")) + "\n\n"
             + bq(small_caps(
                 "forward any message from the channel, or send the channel @username / numeric ID.\n\n"
                 "this channel will receive posters when 'send to main channel' is tapped."
@@ -1562,7 +1635,7 @@ async def button_handler(
         await safe_send_message(
             context.bot, chat_id, text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎌 Anime Channel", url=PUBLIC_ANIME_CHANNEL_URL)],
+                [InlineKeyboardButton(" Anime Channel", url=PUBLIC_ANIME_CHANNEL_URL)],
                 [_back_btn("user_back")],
             ]),
         )
@@ -1595,7 +1668,7 @@ async def button_handler(
             return
         user_states[uid] = "CW_WAITING_CHANNEL_ID"
         await safe_edit_text(
-            query, b("📣 add channel welcome") + "\n\n"
+            query, b(" add channel welcome") + "\n\n"
             + bq(b(small_caps("send the channel id, @username, or forward a post:"))),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_channel_welcome"), _close_btn()]]),
         )
@@ -1755,13 +1828,13 @@ async def button_handler(
                 f"<b>{small_caps('DM Filter')}:</b> {'✅ ON' if dm_on else '❌ OFF'}\n"
                 f"<b>{small_caps('Group Filter')}:</b> {'✅ ON' if grp_on else '❌ OFF'}"
             )
-            + (f"\n\n<b>{small_caps('📢 channels & anime:')}</b>\n" + ch_lines if ch_lines else "")
+            + (f"\n\n<b>{small_caps(' channels & anime:')}</b>\n" + ch_lines if ch_lines else "")
         )
         keyboard = [
             [bold_button(small_caps("toggle dm filter"),    callback_data="filter_toggle_dm"),
              bold_button(small_caps("toggle group filter"), callback_data="filter_toggle_group")],
-            [bold_button(small_caps("📢 manage channels"),  callback_data="manage_force_sub")],
-            [bold_button(small_caps("🎌 channel anime links"), callback_data="admin_anime_links")],
+            [bold_button(small_caps(" manage channels"),  callback_data="manage_force_sub")],
+            [bold_button(small_caps(" channel anime links"), callback_data="admin_anime_links")],
             [_back_btn("admin_back"), _close_btn()],
         ]
         await safe_send_message(context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
