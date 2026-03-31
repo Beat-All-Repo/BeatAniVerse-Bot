@@ -297,7 +297,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         b("🔄 Getting your link via our server bot…"),
                         reply_markup=InlineKeyboardMarkup([[
                             InlineKeyboardButton(
-                                " Get Your Link",
+                                "📥 Get Your Link",
                                 url=f"https://t.me/{clone_uname}?start={link_id}"
                             )
                         ]]),
