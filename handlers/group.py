@@ -59,6 +59,15 @@ async def group_message_handler(
     if _FILTER_POSTER_AVAILABLE and lower and not lower.startswith("/"):
         asyncio.create_task(_handle_anime_filter(update, context, lower))
 
+    # Single-letter alpha filter panel — also fires in ALL groups
+    stripped = text.strip()
+    if len(stripped) == 1 and stripped.isalpha() and not lower.startswith("/"):
+        try:
+            from modules.anime import _send_alpha_filter_panel
+            asyncio.create_task(_send_alpha_filter_panel(update, context, stripped))
+        except Exception as _afe:
+            logger.debug(f"alpha_filter: {_afe}")
+
     # Check if group is connected
     _connected = panel_cache_get("connected_groups")
     if _connected is not None:
@@ -114,14 +123,7 @@ async def group_message_handler(
                 await _group_post(category, query_text)
             return
 
-    # Single-letter alpha filter panel
-    stripped = text.strip()
-    if len(stripped) == 1 and stripped.isalpha() and not stripped.startswith("/"):
-        try:
-            from modules.anime import _send_alpha_filter_panel
-            asyncio.create_task(_send_alpha_filter_panel(update, context, stripped))
-        except Exception as _afe:
-            logger.debug(f"alpha_filter: {_afe}")
+
 
 
 async def _handle_anime_filter(
@@ -238,11 +240,22 @@ async def _handle_anime_filter(
                 title_b, native, st, rows, desc, cover_url, score = await loop.run_in_executor(
                     None, _build_anime_data, data
                 )
-                poster_buf = await loop.run_in_executor(
-                    None, _make_poster, template, title_b, native, st, rows, desc,
-                    cover_url, score, settings.get("watermark_text"),
-                    settings.get("watermark_position", "center"), None, "bottom",
-                )
+                # Try PosterBot template first for higher quality
+                poster_buf = None
+                try:
+                    from modules.anime import _pb_create_poster_sync, _PB_TEMPLATE_MAP
+                    if _PB_TEMPLATE_MAP.get(template) is not None:
+                        poster_buf = await loop.run_in_executor(
+                            None, _pb_create_poster_sync, template, data
+                        )
+                except Exception:
+                    pass
+                if not poster_buf:
+                    poster_buf = await loop.run_in_executor(
+                        None, _make_poster, template, title_b, native, st, rows, desc,
+                        cover_url, score, settings.get("watermark_text"),
+                        settings.get("watermark_position", "center"), None, "bottom",
+                    )
                 site_url = data.get("siteUrl", "")
                 genres = ", ".join((data.get("genres") or [])[:3])
                 t_d = data.get("title", {}) or {}
