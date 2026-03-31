@@ -413,7 +413,7 @@ async def send_user_features_panel(
 
     FEATURES_PAGES = [
         {
-            "title": " ᴀɴɪᴍᴇ & ᴍᴀɴɢᴀ",
+            "title": "🎌 ᴀɴɪᴍᴇ & ᴍᴀɴɢᴀ",
             "items": [
                 ("/anime &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴀɴɪᴍᴇ ᴘᴏsᴛᴇʀ + ɪɴꜰᴏ"),
                 ("/manga &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴍᴀɴɢᴀ ᴘᴏsᴛᴇʀ"),
@@ -435,7 +435,7 @@ async def send_user_features_panel(
             ],
         },
         {
-            "title": " ɢʀᴏᴜᴘ ᴛᴏᴏʟs",
+            "title": "📋 ɢʀᴏᴜᴘ ᴛᴏᴏʟs",
             "items": [
                 ("/warn",       "ᴡᴀʀɴ ᴀ ᴜsᴇʀ"),
                 ("/warns",      "ᴄʜᴇᴄᴋ ᴡᴀʀɴs"),
@@ -464,10 +464,10 @@ async def send_user_features_panel(
     total = len(pages)
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("🔙", callback_data=f"user_features_{page-1}"))
+        nav_row.append(InlineKeyboardButton("◀", callback_data=f"user_features_{page-1}"))
     nav_row.append(InlineKeyboardButton(f"· {page+1}/{total} ·", callback_data="noop"))
     if page < total - 1:
-        nav_row.append(InlineKeyboardButton("🔜", callback_data=f"user_features_{page+1}"))
+        nav_row.append(InlineKeyboardButton("▶", callback_data=f"user_features_{page+1}"))
 
     keyboard = [
         nav_row,
