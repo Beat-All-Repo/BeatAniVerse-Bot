@@ -106,14 +106,14 @@ LANG_LABELS = {cb: label for label, cb in LANG_OPTIONS}
 # ── Size / type options ───────────────────────────────────────────────────────
 
 SIZE_OPTIONS = [
-    # Original palette templates
-    ("🎌 ᴀɴɪᴍᴇ",            "size_ani",       "ani"),
+    # PosterBot high-quality templates
+    ("🎌 ᴀɴɪʟɪsᴛ",          "size_ani",       "ani"),
     ("🔴 ɴᴇᴛꜰʟɪx",          "size_net",       "net"),
     ("🌑 ᴅᴀʀᴋ",             "size_dark",      "dark"),
     ("🍊 ᴄʀᴜɴᴄʜʏʀᴏʟʟ",     "size_crun",      "crun"),
     ("☀️ ʟɪɢʜᴛ",            "size_light",     "light"),
     ("✨ ᴍᴏᴅᴇʀɴ",           "size_mod",       "mod"),
-    # Reference-image layouts (distinct structure)
+    # Custom reference layouts
     ("📺 sᴛʀᴇᴀᴍ",           "size_stream",    "stream"),
     ("🎴 ᴠᴇssᴇʟ",           "size_vessel",    "vessel"),
     ("🎞 sᴘʟᴀsʜ",           "size_splash",    "splash"),
@@ -318,26 +318,32 @@ def _season_queries(base: str, n: int) -> List[str]:
 def _al_sync(gql: str, search: str) -> Optional[Any]:
     """
     Smart multi-strategy AniList search.
-    Uses SEARCH_MATCH,POPULARITY_DESC to return most popular matching result.
-    Includes sanity check to prevent "Demon Slayer → Onigiri" type wrong results.
+    Tries: resolved abbrev, original query, title-cased, first 3 words, first word.
+    Caches each result. No sanity filter — AniList search_match is trusted.
     """
     resolved = _resolve_query(search)
     queries: List[str] = []
-    if resolved.lower() != search.lower():
+    if resolved.lower() != search.strip().lower():
         queries.append(resolved)
-    queries.append(search)
+    queries.append(search.strip())
     if search.title() != search:
         queries.append(search.title())
     words = search.split()
     if len(words) > 2:
         queries.append(" ".join(words[:3]))
+    if len(words) > 1:
+        queries.append(words[0])   # last-resort: single word
 
     seen: set = set()
     for q in queries:
-        k = q.lower()
-        if k in seen:
+        k = q.strip().lower()
+        if not k or k in seen:
             continue
         seen.add(k)
+        ck = f"als:{gql[:8]}:{k}"
+        cached = _cache_get(ck)
+        if cached is not None:
+            return cached
         try:
             r = requests.post(
                 _AL_URL,
@@ -346,33 +352,17 @@ def _al_sync(gql: str, search: str) -> Optional[Any]:
                 timeout=12,
             )
             if r.status_code != 200:
+                logger.debug(f"[anime] AniList HTTP {r.status_code} for [{q}]")
                 continue
-            data = r.json().get("data", {})
+            data  = r.json().get("data", {})
             result = data.get("Media") or data.get("Character") or data.get("Page")
             if not result:
                 continue
-
-            # Sanity check: for 2+ word queries, at least one significant word
-            # must appear in the result title — prevents completely wrong results
-            if "Media" in r.json().get("data", {}):
-                res_titles = [
-                    (result.get("title") or {}).get("english") or "",
-                    (result.get("title") or {}).get("romaji") or "",
-                ]
-                search_words = [w for w in search.lower().split() if len(w) > 3]
-                if len(search_words) >= 2:
-                    res_text = " ".join(res_titles).lower()
-                    word_match = any(w in res_text for w in search_words)
-                    if not word_match:
-                        logger.debug(f"[anime] sanity fail: \'{q}\' → \'{res_titles[0]}\' (skipping)")
-                        continue
-
             _cache_set(ck, result)
             return result
         except Exception as exc:
             logger.debug(f"[anime] AniList [{q}]: {exc}")
     return None
-
 
 def _al_page_sync(search: str, gql: str = None) -> List[Dict]:
     gql = gql or _ANIME_PAGE_GQL
@@ -416,9 +406,73 @@ def _clean(text: str, mx: int = 300) -> str:
 
 # ── Poster generation ─────────────────────────────────────────────────────────
 
+# ── PosterBot template key mapping ───────────────────────────────────────────
+_PB_TEMPLATE_MAP = {
+    "ani":    "anilist",    # AniList-style layout
+    "crun":   "crunchyroll", # Crunchyroll-style
+    "net":    "netflix",    # Netflix-style
+    "dark":   "darksimple", # Dark minimal
+    "light":  "lightsimple",# Light minimal
+    "mod":    "modern",     # Modern layout
+    # New reference templates go through poster_engine directly
+    "stream": None, "vessel": None, "splash": None, "od3n": None,
+    # Manga variants mirror anime templates
+    "anim":   "anilist", "netm": "netflix", "darkm": "darksimple",
+    "lightm": "lightsimple", "modm": "modern",
+}
+
+def _pb_create_poster_sync(template_key: str, anime_data: Dict) -> Optional[BytesIO]:
+    """
+    Call the appropriate PosterBot template create_poster() function.
+    Returns BytesIO or None.
+    """
+    pb_name = _PB_TEMPLATE_MAP.get(template_key)
+    if not pb_name:
+        return None
+    try:
+        if pb_name == "anilist":
+            from templates.anilist_poster import create_poster
+        elif pb_name == "netflix":
+            from templates.netflix import create_poster
+        elif pb_name == "crunchyroll":
+            from templates.crunchyroll_poster import create_poster
+        elif pb_name == "darksimple":
+            from templates.darksimple import create_poster
+        elif pb_name == "lightsimple":
+            from templates.lightsimple import create_poster
+        elif pb_name == "modern":
+            from templates.modern import create_poster
+        else:
+            return None
+        result = create_poster(anime_data)
+        if isinstance(result, BytesIO):
+            result.seek(0)
+        return result
+    except Exception as exc:
+        logger.debug(f"[PosterBot] {pb_name} failed: {exc}")
+        return None
+
+
 async def _generate_poster_buf(
     data: Dict, media_type: str, template: str
 ) -> Optional[BytesIO]:
+    """
+    Generate poster using PosterBot templates when available,
+    falling back to poster_engine for reference layouts (stream/vessel/splash/od3n).
+    """
+    loop = asyncio.get_event_loop()
+
+    # Try PosterBot template first (anime & manga use their own high-quality generators)
+    pb_key = _PB_TEMPLATE_MAP.get(template)
+    if pb_key is not None:
+        try:
+            buf = await loop.run_in_executor(None, _pb_create_poster_sync, template, data)
+            if buf:
+                return buf
+        except Exception as exc:
+            logger.debug(f"[PosterBot] {template} executor failed: {exc}")
+
+    # Fallback: poster_engine (reference layouts + any PosterBot failure)
     try:
         from poster_engine import (
             _build_anime_data, _build_manga_data,
@@ -428,7 +482,6 @@ async def _generate_poster_buf(
     except ImportError:
         return None
 
-    loop     = asyncio.get_event_loop()
     settings = _get_settings(media_type.lower() if media_type != "TV" else "tvshow")
     build_fn = {
         "ANIME": _build_anime_data,
@@ -449,7 +502,7 @@ async def _generate_poster_buf(
             None, "bottom",
         )
     except Exception as exc:
-        logger.debug(f"poster_gen [{template}]: {exc}")
+        logger.debug(f"poster_engine [{template}]: {exc}")
         return None
 
 
