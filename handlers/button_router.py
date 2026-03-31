@@ -1341,7 +1341,7 @@ async def button_handler(
                     if manga:
                         caption_text, cover_url = MangaDexClient.format_manga_info(manga)
                         markup = InlineKeyboardMarkup([[
-                            InlineKeyboardButton(" Read on MangaDex", url=f"https://mangadex.org/title/{raw_id}"),
+                            InlineKeyboardButton("📖 Read on MangaDex", url=f"https://mangadex.org/title/{raw_id}"),
                         ], [bold_button("Track This Manga", callback_data=f"mdex_track_{raw_id}")]])
                         if cover_url:
                             await safe_send_photo(context.bot, chat_id, cover_url, caption=caption_text, reply_markup=markup)
@@ -1383,7 +1383,7 @@ async def button_handler(
         user_states[uid] = "AWAITING_MAIN_CHANNEL_ID"
         await safe_send_message(
             context.bot, chat_id,
-            b(small_caps(" set main channel")) + "\n\n"
+            b(small_caps("📢 set main channel")) + "\n\n"
             + bq(small_caps(
                 "forward any message from the channel, or send the channel @username / numeric ID.\n\n"
                 "this channel will receive posters when 'send to main channel' is tapped."
@@ -1948,7 +1948,7 @@ async def button_handler(
         current = get_setting("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
         user_states[uid] = "AWAITING_JOIN_BTN_TEXT"
         await safe_edit_text(
-            query, b(small_caps("✏️ set join button text")) + "\n\n"
+            query, b(small_caps(" set join button text")) + "\n\n"
             + bq(b(small_caps("current: ")) + f"<code>{e(current)}</code>\n\n" + small_caps("send new button text:")),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
         )
