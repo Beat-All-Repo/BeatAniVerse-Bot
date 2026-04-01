@@ -257,6 +257,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = user.id if user else 0
 
     if user:
+        # Always register locally FIRST (works even if DB is down)
+        try:
+            from broadcast_engine import register_user_local
+            register_user_local(uid)
+        except Exception:
+            pass
+        # Then try DB
         try:
             from database_dual import add_user
             add_user(uid, user.username, user.first_name, user.last_name)
