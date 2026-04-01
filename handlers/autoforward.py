@@ -186,3 +186,33 @@ async def _delayed_forward(context) -> None:
         pin=d.get("pin", False), delete_src=d.get("delete_src", False),
         caption_override=d.get("caption_override"),
     )
+
+
+async def _show_autoupdate_menu(context, chat_id: int) -> None:
+    """Show manga/anime auto-update tracker panel (alias bridging misc_cmds call)."""
+    from telegram import InlineKeyboardMarkup
+    from core.text_utils import b, bq, small_caps, e, code
+    from core.buttons import _btn, _grid3, _back_btn, _close_btn
+    from core.helpers import safe_send_message
+    from api.mangadex import MangaTracker
+
+    rows_data = MangaTracker.get_all_tracked() if hasattr(MangaTracker, "get_all_tracked") else []
+    text = b(small_caps("🔄 auto-update tracker")) + "\n\n"
+    if rows_data:
+        for row in rows_data[:15]:
+            title = row[1] if len(row) > 1 else "?"
+            cid   = row[2] if len(row) > 2 else "?"
+            text += f"• <b>{e(str(title))}</b> → <code>{e(str(cid))}</code>\n"
+    else:
+        text += bq(small_caps("no anime/manga being tracked yet."))
+
+    grid = [
+        _btn("➕ ADD TRACK",  "autoupdate_add"),
+        _btn("➖ REMOVE",     "autoupdate_remove"),
+        _btn("▶️ RUN NOW",    "autoupdate_run"),
+        _btn("⚙️ SETTINGS",  "autoupdate_settings"),
+    ]
+    rows = _grid3(grid)
+    rows.append([_back_btn("admin_back"), _close_btn()])
+    await safe_send_message(context.bot, chat_id, text,
+                            reply_markup=InlineKeyboardMarkup(rows))
