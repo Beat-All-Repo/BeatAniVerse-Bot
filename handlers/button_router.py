@@ -175,7 +175,7 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from handlers.help import broadcaststats_command
+        from handlers.misc_cmds import broadcaststats_command
         await broadcaststats_command(update, context)
         return
 
@@ -326,7 +326,7 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from handlers.help import backup_command
+        from handlers.misc_cmds import backup_command
         await backup_command(update, context)
         return
 
@@ -897,7 +897,7 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from handlers.help import exportusers_command
+        from handlers.misc_cmds import exportusers_command
         asyncio.create_task(exportusers_command(update, context))
         await safe_answer(query, small_caps("📤 exporting users…"))
         return
@@ -1217,7 +1217,7 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from handlers.misc_cmds import _show_autoupdate_menu
+        from handlers.autoforward import _show_autoupdate_menu
         await _show_autoupdate_menu(context, chat_id)
         return
 
@@ -1354,7 +1354,7 @@ async def button_handler(
                         mid = int(raw_id)
                     except ValueError:
                         mid = None
-                    from handlers.media_cmds import generate_and_send_post
+                    from handlers.post_gen import generate_and_send_post
                     await generate_and_send_post(context, chat_id, cat_key, media_id=mid)
                 return
 
@@ -1635,7 +1635,7 @@ async def button_handler(
         await safe_send_message(
             context.bot, chat_id, text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(" Anime Channel", url=PUBLIC_ANIME_CHANNEL_URL)],
+                [InlineKeyboardButton("🎌 Anime Channel", url=PUBLIC_ANIME_CHANNEL_URL)],
                 [_back_btn("user_back")],
             ]),
         )
@@ -1668,7 +1668,7 @@ async def button_handler(
             return
         user_states[uid] = "CW_WAITING_CHANNEL_ID"
         await safe_edit_text(
-            query, b(" add channel welcome") + "\n\n"
+            query, b("📣 add channel welcome") + "\n\n"
             + bq(b(small_caps("send the channel id, @username, or forward a post:"))),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_channel_welcome"), _close_btn()]]),
         )
@@ -1828,13 +1828,13 @@ async def button_handler(
                 f"<b>{small_caps('DM Filter')}:</b> {'✅ ON' if dm_on else '❌ OFF'}\n"
                 f"<b>{small_caps('Group Filter')}:</b> {'✅ ON' if grp_on else '❌ OFF'}"
             )
-            + (f"\n\n<b>{small_caps(' channels & anime:')}</b>\n" + ch_lines if ch_lines else "")
+            + (f"\n\n<b>{small_caps('📢 channels & anime:')}</b>\n" + ch_lines if ch_lines else "")
         )
         keyboard = [
             [bold_button(small_caps("toggle dm filter"),    callback_data="filter_toggle_dm"),
              bold_button(small_caps("toggle group filter"), callback_data="filter_toggle_group")],
-            [bold_button(small_caps(" manage channels"),  callback_data="manage_force_sub")],
-            [bold_button(small_caps(" channel anime links"), callback_data="admin_anime_links")],
+            [bold_button(small_caps("📢 manage channels"),  callback_data="manage_force_sub")],
+            [bold_button(small_caps("🎌 channel anime links"), callback_data="admin_anime_links")],
             [_back_btn("admin_back"), _close_btn()],
         ]
         await safe_send_message(context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1948,7 +1948,7 @@ async def button_handler(
         current = get_setting("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
         user_states[uid] = "AWAITING_JOIN_BTN_TEXT"
         await safe_edit_text(
-            query, b(small_caps(" set join button text")) + "\n\n"
+            query, b(small_caps("✏️ set join button text")) + "\n\n"
             + bq(b(small_caps("current: ")) + f"<code>{e(current)}</code>\n\n" + small_caps("send new button text:")),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
         )
