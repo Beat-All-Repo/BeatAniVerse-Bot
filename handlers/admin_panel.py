@@ -389,7 +389,24 @@ async def _do_broadcast(
     message_id: int,
     mode: str,
 ) -> None:
-    """Execute a broadcast to all registered users."""
+    """
+    Execute a broadcast using the independent broadcast_engine.
+    Works even when DB is unavailable — uses local user fallback file.
+    """
+    try:
+        from broadcast_engine import start_broadcast_task
+        await start_broadcast_task(
+            bot=context.bot,
+            admin_chat_id=admin_chat_id,
+            from_chat_id=from_chat_id,
+            message_id=message_id,
+            mode=mode,
+        )
+        return
+    except Exception as _be_exc:
+        logger.warning(f"broadcast_engine failed, falling back: {_be_exc}")
+
+    # Original fallback below (kept for safety)
     import asyncio
     from database_dual import get_all_users, db_manager
     from core.config import ADMIN_ID, OWNER_ID, RATE_LIMIT_DELAY
