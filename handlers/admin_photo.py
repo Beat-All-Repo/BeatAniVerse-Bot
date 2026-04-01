@@ -150,7 +150,8 @@ async def handle_admin_photo(
         if state == SET_CATEGORY_LOGO:
             category = context.user_data.get("editing_category")
             if category:
-                from handlers.post_gen import update_category_field, show_category_settings_menu
+                from handlers.post_gen import update_category_field
+                from handlers.admin_panel import show_category_settings_menu
                 ok = update_category_field(category, "logo_file_id", file_id)
                 if ok:
                     await msg.reply_text(
@@ -163,7 +164,7 @@ async def handle_admin_photo(
                         parse_mode=ParseMode.HTML,
                     )
             user_states.pop(uid, None)
-            from handlers.post_gen import show_category_settings_menu
+            from handlers.admin_panel import show_category_settings_menu
             await show_category_settings_menu(
                 context, update.effective_chat.id, category or "anime", None
             )
