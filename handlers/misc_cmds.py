@@ -470,3 +470,53 @@ async def getfileid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     file_id = photo.file_id
     await safe_send_message(context.bot, msg.chat_id, f"✅ <b>File ID:</b>\n<code>{file_id}</code>", parse_mode="HTML")
+
+
+async def _show_panel_img_list(
+    bot, chat_id: int, query=None, page: int = 0
+) -> None:
+    """Show paginated panel image list for admin."""
+    from telegram import InlineKeyboardMarkup
+    from core.text_utils import b, bq, code, e, small_caps
+    from core.buttons import _back_btn, _close_btn, bold_button
+    from core.helpers import safe_send_message
+    from core.panel_image import get_panel_db_images
+
+    if query:
+        try: await query.delete_message()
+        except Exception: pass
+
+    items = get_panel_db_images() or []
+    PAGE_SIZE = 8
+    total = len(items)
+    start = page * PAGE_SIZE
+    page_items = items[start:start + PAGE_SIZE]
+
+    text = (
+        b(small_caps("🖼 panel images")) + "\n\n"
+        + bq(
+            f"<b>{small_caps('Total')}:</b> {code(str(total))}\n"
+            f"<b>{small_caps('Page')}:</b> {code(f'{page+1}/{max(1,(total+PAGE_SIZE-1)//PAGE_SIZE)}')}"
+        )
+    )
+    if page_items:
+        text += "\n\n"
+        for item in page_items:
+            idx = item.get("index", "?")
+            fid = item.get("file_id", "")[:20] + "…" if item.get("file_id") else "—"
+            text += f"• #{idx}: <code>{e(fid)}</code>\n"
+
+    rows = []
+    nav = []
+    if page > 0:
+        nav.append(bold_button("◀", callback_data=f"panel_img_page_{page-1}"))
+    if start + PAGE_SIZE < total:
+        nav.append(bold_button("▶", callback_data=f"panel_img_page_{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([
+        bold_button(small_caps("➕ add image"), callback_data="panel_img_add_urls"),
+        _back_btn("admin_back"), _close_btn(),
+    ])
+    await safe_send_message(bot, chat_id, text,
+                            reply_markup=InlineKeyboardMarkup(rows))
