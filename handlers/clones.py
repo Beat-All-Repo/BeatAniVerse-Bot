@@ -91,3 +91,66 @@ async def register_clone_token(
             context.bot, chat_id,
             b("❌ Invalid token or API error:") + "\n" + bq(code(e(str(exc)[:200])))
         )
+
+
+# ── Clone management panels ────────────────────────────────────────────────────
+
+async def show_clones_panel(update, context, query=None) -> None:
+    """Show registered clone bots panel."""
+    from telegram import InlineKeyboardMarkup
+    from core.text_utils import b, bq, code, e, small_caps
+    from core.buttons import _btn, _grid3, _back_btn, _close_btn, bold_button
+    from core.helpers import safe_send_message
+    from database_dual import get_all_clone_bots
+    from core.config import ADMIN_ID, OWNER_ID
+
+    chat_id = query.message.chat_id if query else (
+        update.effective_chat.id if update else 0)
+    if query:
+        try: await query.delete_message()
+        except Exception: pass
+
+    clones = get_all_clone_bots(active_only=False)
+    text = b(small_caps("🤖 clone bots")) + "\n\n"
+    if clones:
+        for _, token, uname, active, added in clones:
+            status = "🟢" if active else "🔴"
+            text += f"{status} @{e(uname or '?')} — {code(str(added or '')[:10])}\n"
+    else:
+        text += bq(small_caps("no clone bots registered yet."))
+
+    rows = [
+        [bold_button(small_caps("➕ add clone"), callback_data="clone_add"),
+         bold_button(small_caps("➖ remove"),    callback_data="clone_remove")],
+        [bold_button(small_caps("🔄 refresh commands"), callback_data="clone_refresh_cmds")],
+        [_back_btn("admin_back"), _close_btn()],
+    ]
+    await safe_send_message(context.bot, chat_id, text,
+                            reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def show_remove_clone_menu(query) -> None:
+    """Show inline menu to select which clone to remove."""
+    from telegram import InlineKeyboardMarkup
+    from core.text_utils import b, bq, e, small_caps
+    from core.buttons import _back_btn, _close_btn, bold_button
+    from core.helpers import safe_edit_text
+    from database_dual import get_all_clone_bots
+
+    clones = get_all_clone_bots(active_only=False)
+    if not clones:
+        try:
+            await query.answer(small_caps("no clones to remove"), show_alert=True)
+        except Exception:
+            pass
+        return
+
+    rows = []
+    for _, token, uname, active, _ in clones:
+        rows.append([bold_button(
+            f"🗑 @{e(uname)}", callback_data=f"clone_del_{uname}")])
+    rows.append([_back_btn("manage_clones"), _close_btn()])
+
+    await safe_edit_text(
+        query, b(small_caps("select clone to remove:")),
+        reply_markup=InlineKeyboardMarkup(rows))
