@@ -853,15 +853,26 @@ async def _deliver_poster(
             logger.debug(f"poster send: {exc}")
 
     if not sent_poster:
-        cv = (data.get("coverImage") or {}).get("extraLarge", "")
-        lp = f'\n<a href="{_e(cv)}">&#8203;</a>' if cv else ""
-        try:
-            sent_poster = await msg.reply_text(
-                caption + lp, parse_mode=ParseMode.HTML,
-                reply_markup=kb, disable_web_page_preview=not cv,
-            )
-        except Exception:
-            pass
+        # Try sending cover image URL directly (no PIL needed)
+        cv = (data.get("coverImage") or {}).get("extraLarge") or \
+             (data.get("coverImage") or {}).get("large") or ""
+        if cv:
+            try:
+                sent_poster = await msg.reply_photo(
+                    photo=cv, caption=caption,
+                    parse_mode=ParseMode.HTML, reply_markup=kb,
+                )
+            except Exception:
+                pass
+        if not sent_poster:
+            lp = f'\n<a href="{_e(cv)}">&#8203;</a>' if cv else ""
+            try:
+                sent_poster = await msg.reply_text(
+                    caption + lp, parse_mode=ParseMode.HTML,
+                    reply_markup=kb, disable_web_page_preview=not cv,
+                )
+            except Exception:
+                pass
 
     # Store state
     t_d    = data.get("title", {}) or {}
