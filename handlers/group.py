@@ -106,7 +106,7 @@ async def group_message_handler(
     asyncio.create_task(_del_user_cmd())
 
     async def _group_post(category: str, query_text: str) -> None:
-        from handlers.media_cmds import generate_and_send_post
+        from handlers.post_gen import generate_and_send_post
         sent = await generate_and_send_post(context, chat_id, category, query_text)
         # Never auto-delete poster photos — only delete text/non-photo responses
         if sent:
@@ -152,7 +152,7 @@ async def _handle_anime_filter(
 
         seen_titles = set()
         for row in all_links:
-            link_id_r = row[0]
+            link_id_r    = row[0]
             channel_id_r = row[1]
             channel_title_r = (row[2] or "").strip()
             if not channel_title_r or channel_title_r.lower() in seen_titles:
@@ -161,11 +161,43 @@ async def _handle_anime_filter(
             if len(channel_title_r) < 3:
                 continue
             a_title = channel_title_r.lower()
+            # Match: full title in message, OR any word of 4+ chars from title in message
             if a_title in lower_text or re.search(r'\b' + re.escape(a_title) + r'\b', lower_text):
                 matched_anime = channel_title_r
                 matched_channel_id = channel_id_r
                 matched_link_id = link_id_r
                 break
+            # Word-level fuzzy: if any significant word from anime title in message
+            words = [w for w in a_title.split() if len(w) >= 4]
+            if len(words) >= 1 and any(w in lower_text for w in words):
+                matched_anime = channel_title_r
+                matched_channel_id = channel_id_r
+                matched_link_id = link_id_r
+                break
+
+        # Also check anime_channel_links table for titles not in links table
+        if not matched_anime:
+            try:
+                from database_dual import get_all_anime_channel_links
+                acl = get_all_anime_channel_links() or []
+                for arow in acl:
+                    # arow = (id, anime_title, channel_id, channel_title, link_id, created_at)
+                    an_title_r = (arow[1] or "").strip().lower()
+                    if len(an_title_r) < 3:
+                        continue
+                    if an_title_r in lower_text or re.search(r'\b' + re.escape(an_title_r) + r'\b', lower_text):
+                        matched_anime   = arow[1].strip()
+                        matched_channel_id = arow[2]
+                        matched_link_id = arow[4]
+                        break
+                    words = [w for w in an_title_r.split() if len(w) >= 4]
+                    if words and any(w in lower_text for w in words):
+                        matched_anime   = arow[1].strip()
+                        matched_channel_id = arow[2]
+                        matched_link_id = arow[4]
+                        break
+            except Exception:
+                pass
 
         if not matched_anime:
             return
@@ -307,7 +339,27 @@ async def _handle_anime_filter(
                     file_id_to_cache = sent_msg.photo[-1].file_id
             except Exception as _se:
                 logger.debug(f"[filter] poster send: {_se}")
+                poster_buf = None  # reset so we try cover URL next
 
+        # Fallback 1: send AniList cover image directly (no PIL needed)
+        if not sent_msg and data:
+            cover_url_direct = (
+                (data.get("coverImage") or {}).get("extraLarge") or
+                (data.get("coverImage") or {}).get("large") or ""
+            )
+            if cover_url_direct:
+                try:
+                    sent_msg = await bot.send_photo(
+                        chat_id=chat_id, photo=cover_url_direct,
+                        caption=caption, parse_mode="HTML", reply_markup=kb,
+                        reply_to_message_id=update.message.message_id,
+                    )
+                    if sent_msg and sent_msg.photo:
+                        file_id_to_cache = sent_msg.photo[-1].file_id
+                except Exception:
+                    pass
+
+        # Fallback 2: text-only with hidden image link
         if not sent_msg:
             try:
                 sent_msg = await bot.send_message(
