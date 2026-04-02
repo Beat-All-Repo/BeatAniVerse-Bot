@@ -1740,3 +1740,33 @@ class _DBManagerCompat:
 
 
 db_manager = _DBManagerCompat()
+
+def extract_anime_name_from_title(channel_title: str) -> str:
+    """
+    Extract clean anime name from a channel title.
+    Examples:
+      "Demon Slayer Hindi Dubbed"  → "Demon Slayer"
+      "Naruto Shippuden in Hindi"  → "Naruto Shippuden"
+      "One Piece - Hindi Dub"      → "One Piece"
+      "JJK Season 2 Hindi"         → "JJK Season 2"
+      "Anime Channel"              → "Anime Channel" (unchanged)
+    """
+    import re as _re
+    if not channel_title:
+        return ""
+    t = channel_title.strip()
+    # Remove trailing language/dub markers (case-insensitive)
+    _STRIP = [
+        r"\s*[\-|:–—].*$",                          # " - anything after dash"
+        r"\s+in\s+(hindi|english|tamil|telugu|urdu|japanese|korean|chinese)\s*$",
+        r"\s+(hindi|english|tamil|telugu|urdu|japanese|korean|chinese)\s+(dubbed|dub|sub|subbed|audio|version)\s*$",
+        r"\s+(dubbed|dub|subbed|sub|esub|multi.?audio|multi.?sub)\s*$",
+        r"\s+(official|hd|fhd|4k|720p|1080p)\s*$",
+        r"\s+channel\s*$",
+        r"\s+anime\s*$",
+    ]
+    for pat in _STRIP:
+        t = _re.sub(pat, "", t, flags=_re.IGNORECASE).strip()
+    # If result is too short (< 3 chars), return original
+    return t if len(t) >= 3 else channel_title.strip()
+
