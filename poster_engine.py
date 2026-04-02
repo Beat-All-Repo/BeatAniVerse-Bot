@@ -470,6 +470,13 @@ def _make_poster(
         return _make_od3n(title, native_title, status, info_rows, desc,
                           cover_url, score, watermark_text, _branding)
 
+    # ── Cover image pre-check — if can't download, return None so caller
+    # can send the cover URL directly to Telegram (no PIL needed) ──────────
+    cover_raw = _dl(cover_url) if cover_url else None
+    if cover_raw is None and cover_url:
+        logger.debug(f"[poster_engine] cover download failed for {cover_url[:60]} — skipping PIL poster")
+        return None
+
     # ── Original palette-based layout (all other templates) ──────────────────
     t = TEMPLATES.get(template, TEMPLATES["ani"])
     bg_rgb  = t["bg"]
@@ -1506,6 +1513,30 @@ async def _poster_cmd(
         studio   = stnode[0].get("name", "") if stnode else ""
         lang_v   = ""  # poster_engine commands don't have lang selection — left empty
 
+        # Resolve join_url FIRST (needed for {link} tag in caption template)
+        from core.config import JOIN_BTN_TEXT
+        join_url = PUBLIC_ANIME_CHANNEL_URL
+        join_txt = JOIN_BTN_TEXT
+        main_ch  = ""
+        try:
+            from database_dual import get_setting as _gs
+            join_txt = _gs("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
+            join_url = _gs("env_PUBLIC_ANIME_CHANNEL_URL", "") or PUBLIC_ANIME_CHANNEL_URL
+            main_ch  = _gs("main_channel_id", "")
+        except Exception:
+            pass
+
+        # Try anime-specific channel link
+        try:
+            from database_dual import get_anime_channel_links as _acl
+            alinks = _acl(title)
+            if alinks and alinks[0][2]:
+                bot_uname = context.bot.username or ""
+                if bot_uname:
+                    join_url = f"https://t.me/{bot_uname}?start={alinks[0][2]}"
+        except Exception:
+            pass
+
         # Try custom caption template
         tmpl_cap = settings.get("caption_template", "")
         if tmpl_cap:
@@ -1530,29 +1561,6 @@ async def _poster_cmd(
         if len(caption) > 1024:
             caption = caption[:1020] + "…"
         caption = _apply_poster_style(caption)
-
-        # Buttons — info + join now to watch
-        from core.config import JOIN_BTN_TEXT
-        try:
-            from database_dual import get_setting as _gs
-            join_txt = _gs("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
-            join_url = _gs("env_PUBLIC_ANIME_CHANNEL_URL", "") or PUBLIC_ANIME_CHANNEL_URL
-            main_ch  = _gs("main_channel_id", "")
-        except Exception:
-            join_txt = JOIN_BTN_TEXT
-            join_url = PUBLIC_ANIME_CHANNEL_URL
-            main_ch  = ""
-
-        # Try anime channel link from DB
-        try:
-            from database_dual import get_anime_channel_links as _acl
-            alinks = _acl(title)
-            if alinks and alinks[0][2]:  # has link_id
-                bot_uname = context.bot.username or ""
-                if bot_uname:
-                    join_url = f"https://t.me/{bot_uname}?start={alinks[0][2]}"
-        except Exception:
-            pass
 
         btns = [
             [InlineKeyboardButton("ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=join_url)],
@@ -1588,14 +1596,39 @@ async def _poster_cmd(
                 except Exception:
                     pass
         else:
-            # Fallback: send as text card if PIL unavailable
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=caption + f"\n\n<a href='{html.escape(cover_url)}'>🖼 Cover</a>" if cover_url else caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(btns),
-                disable_web_page_preview=False,
-            )
+            # Fallback 1: send cover image URL directly (Telegram downloads server-side)
+            sent_cover = None
+            if cover_url:
+                try:
+                    sent_cover = await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=cover_url,
+                        caption=caption,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=InlineKeyboardMarkup(btns),
+                    )
+                    if sent_cover:
+                        import json as _json
+                        try:
+                            from database_dual import set_setting as _ss
+                            _ss(f"last_poster_{uid}", _json.dumps({
+                                "chat_id": chat_id,
+                                "msg_id":  sent_cover.message_id,
+                                "caption": caption,
+                            }))
+                        except Exception:
+                            pass
+                except Exception:
+                    sent_cover = None
+            # Fallback 2: text with link preview
+            if not sent_cover:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption + f"\n\n<a href='{html.escape(cover_url)}'>🖼 Cover</a>" if cover_url else caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(btns),
+                    disable_web_page_preview=not cover_url,
+                )
 
         try:
             await status.delete()
