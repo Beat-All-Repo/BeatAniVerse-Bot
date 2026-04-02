@@ -430,7 +430,6 @@ async def button_handler(
     if data == "set_dm_del_delay":
         if not is_admin:
             return
-        from core.state_machine import user_states
         user_states[uid] = "AWAITING_DM_DEL_DELAY"
         try:
             await query.delete_message()
@@ -455,7 +454,6 @@ async def button_handler(
     if data == "set_gc_del_delay":
         if not is_admin:
             return
-        from core.state_machine import user_states
         user_states[uid] = "AWAITING_GC_DEL_DELAY"
         try:
             await query.delete_message()
@@ -1379,7 +1377,6 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from core.state_machine import user_states
         user_states[uid] = "AWAITING_MAIN_CHANNEL_ID"
         await safe_send_message(
             context.bot, chat_id,
