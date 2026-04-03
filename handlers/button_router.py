@@ -13,7 +13,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from core.config import ADMIN_ID, OWNER_ID, PUBLIC_ANIME_CHANNEL_URL
+from core.config import (
+    ADMIN_ID, OWNER_ID, PUBLIC_ANIME_CHANNEL_URL,
+    LINK_EXPIRY_MINUTES, JOIN_BTN_TEXT, HERE_IS_LINK_TEXT,
+    ANIME_BTN_TEXT, REQUEST_BTN_TEXT, CONTACT_BTN_TEXT,
+    FORCE_SUB_TEXT, BUTTON_STYLE, BOT_NAME,
+)
 from core.logging_setup import logger
 from core.helpers import (
     safe_answer, safe_send_message, safe_edit_text, safe_reply,
@@ -38,6 +43,21 @@ from core.cache import cache_get, cache_set
 from core.filters_system import force_sub_required
 from core.panel_image import get_panel_pic, get_panel_pic_async, _PANEL_IMAGE_AVAILABLE
 from core.panel_store import _deliver_panel, safe_edit_panel
+
+# ── Filter poster integration ──────────────────────────────────────────────────
+try:
+    from filter_poster import (
+        _get_filter_poster_enabled, _set_filter_poster_enabled,
+        _get_default_poster_template, _set_default_poster_template,
+        build_filter_poster_settings_keyboard, get_filter_poster_settings_text,
+        _clear_poster_cache, _get_cache_count, _get_panel_db_images,
+    )
+    _FILTER_POSTER_AVAILABLE = True
+except ImportError:
+    _FILTER_POSTER_AVAILABLE = False
+    def _get_cache_count(): return 0
+    def _clear_poster_cache(): return 0
+    def _get_panel_db_images(): return []
 
 
 @force_sub_required
@@ -242,6 +262,19 @@ async def button_handler(
         user_states[uid] = PENDING_BROADCAST_OPTIONS
         return
 
+    if data == "broadcast_schedule":
+        if not is_admin:
+            return
+        user_states[uid] = SCHEDULE_BROADCAST_DATETIME
+        await safe_edit_text(
+            query,
+            b("📅 Schedule Broadcast") + "\n\n"
+            + bq(b("Send the date and time for the broadcast:\n")
+                 + b("Format: YYYY-MM-DD HH:MM (UTC)")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="admin_back")]]),
+        )
+        return
+
     # ── Force-sub channels panel ───────────────────────────────────────────────
     if data == "manage_force_sub":
         if not is_admin:
@@ -305,6 +338,34 @@ async def button_handler(
         delete_force_sub_channel(uname)
         await safe_answer(query, f"Removed: {uname}")
         await button_handler(update, context, "manage_force_sub")
+        return
+
+    if data == "fsub_list_full":
+        if not is_admin:
+            return
+        from database_dual import get_all_force_sub_channels
+        channels = get_all_force_sub_channels(return_usernames_only=False)
+        text = b(f"ALL FORCE-SUB CHANNELS ({len(channels)})") + "\n\n"
+        for i, (uname, title, jbr) in enumerate(channels, 1):
+            jbr_str = " ✔️ JBR" if jbr else ""
+            text += f"<b>{i}.</b> {e(title or uname)}{jbr_str}\n    ID: <code>{e(str(uname))}</code>\n"
+        await safe_edit_text(
+            query, text,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("manage_force_sub"), _close_btn()]]),
+        )
+        return
+
+    if data == "fsub_link_stats":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_links_count
+            total = get_links_count()
+        except Exception:
+            total = "N/A"
+        from database_dual import get_all_force_sub_channels
+        channels = get_all_force_sub_channels()
+        await safe_answer(query, f"Total links: {total} | Channels: {len(channels)}")
         return
 
     if data == "generate_links":
@@ -382,6 +443,50 @@ async def button_handler(
                 pass
         await safe_answer(query, f"Commands refreshed on {count} clone(s).")
         await button_handler(update, context, "manage_clones")
+        return
+
+    if data == "clone_remove_menu":
+        if not is_admin:
+            return
+        from database_dual import get_all_clone_bots
+        clones = get_all_clone_bots(active_only=True)
+        if not clones:
+            await safe_answer(query, "No clone bots to remove.")
+            return
+        buttons = [_btn(f"@{c[2]}", f"clone_del_{c[2]}") for c in clones]
+        rows = _grid3(buttons)
+        rows.append([_back_btn("manage_clones"), _close_btn()])
+        await safe_edit_text(
+            query, b("SELECT CLONE TO REMOVE"),
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+        return
+
+    if data == "clone_list_full":
+        if not is_admin:
+            return
+        from database_dual import get_all_clone_bots
+        clones = get_all_clone_bots()
+        text = b(f"ALL CLONE BOTS ({len(clones)})") + "\n\n"
+        for i, (cid, token, uname, active, added) in enumerate(clones, 1):
+            st = "🟢" if active else "🔴"
+            text += f"<b>{i}.</b> {st} @{e(uname or '?')}\n"
+        await safe_edit_text(
+            query, text,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("manage_clones"), _close_btn()]]),
+        )
+        return
+
+    if data == "clone_move_links":
+        if not is_admin:
+            return
+        user_states[uid] = "AWAITING_MOVE_LINKS"
+        await safe_edit_text(
+            query,
+            b("MOVE LINKS") + "\n\n"
+            + bq("Send: <code>@from_bot @to_bot</code>\nAll links will be reassigned."),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("manage_clones"), _close_btn()]]),
+        )
         return
 
     # ── Settings ───────────────────────────────────────────────────────────────
@@ -486,6 +591,85 @@ async def button_handler(
         await button_handler(update, context, "admin_settings")
         return
 
+    if data == "admin_link_expiry":
+        if not is_admin:
+            return
+        from database_dual import get_setting
+        current_exp = get_setting("link_expiry_override", str(LINK_EXPIRY_MINUTES))
+        user_states[uid] = "AWAITING_LINK_EXPIRY"
+        await safe_edit_text(
+            query,
+            b("LINK EXPIRY MINUTES") + "\n\n"
+            + bq(f"<b>Current:</b> {current_exp} minutes\n\nSend a number (1-60):"),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_settings"), _close_btn()]]),
+        )
+        return
+
+    if data == "admin_watermarks_toggle":
+        if not is_admin:
+            return
+        from database_dual import get_setting, set_setting
+        cur = get_setting("watermarks_enabled", "true")
+        new_val = "false" if cur == "true" else "true"
+        set_setting("watermarks_enabled", new_val)
+        await safe_answer(query, f"Watermarks {'enabled' if new_val == 'true' else 'disabled'}")
+        await button_handler(update, context, "admin_settings")
+        return
+
+    if data == "admin_spam_settings":
+        if not is_admin:
+            return
+        from database_dual import get_setting
+        spam_protect = get_setting("spam_protection_enabled", "true") == "true"
+        flood_limit  = get_setting("flood_limit", "5")
+        flood_window = get_setting("flood_window_sec", "10")
+        text_sp = (
+            b("SPAM PROTECTION") + "\n\n"
+            + bq(
+                f"<b>Status:</b> {'🟢 Enabled' if spam_protect else '🔴 Disabled'}\n"
+                f"<b>Flood limit:</b> {flood_limit} msgs\n"
+                f"<b>Flood window:</b> {flood_window}s\n\n"
+                "Anti-spam covers:\n"
+                " ✔️ Flood detection\n"
+                " ✔️ Message rate limiting\n"
+                " ✔️ User cooldowns on anime requests\n"
+                " ✔️ Banned user blocking\n"
+                " ✔️ Maintenance mode blocking"
+            )
+        )
+        sp_grid = [
+            _btn("TOGGLE " + ("🟢" if spam_protect else "🔴"), "toggle_spam_protect"),
+            _btn("FLOOD LIMIT",  "set_flood_limit"),
+            _btn("FLOOD WINDOW", "set_flood_window"),
+        ]
+        sp_rows = _grid3(sp_grid)
+        sp_rows.append([_back_btn("admin_settings"), _close_btn()])
+        await safe_edit_text(query, text_sp, reply_markup=InlineKeyboardMarkup(sp_rows))
+        return
+
+    if data == "toggle_spam_protect":
+        if not is_admin:
+            return
+        from database_dual import get_setting, set_setting
+        cur = get_setting("spam_protection_enabled", "true")
+        new_val = "false" if cur == "true" else "true"
+        set_setting("spam_protection_enabled", new_val)
+        await safe_answer(query, f"Spam protection {'on' if new_val == 'true' else 'off'}")
+        await button_handler(update, context, "admin_spam_settings")
+        return
+
+    if data == "set_backup_channel":
+        if not is_admin:
+            return
+        user_states[uid] = SET_BACKUP_CHANNEL
+        await safe_edit_text(
+            query,
+            b(" Set Backup Channel URL") + "\n\n"
+            + bq(b("Send the backup channel URL (e.g., https://t.me/backup_channel)")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="admin_settings")]]),
+        )
+        return
+
     # ── Text style ─────────────────────────────────────────────────────────────
     if data == "admin_text_style":
         if not is_admin:
@@ -572,6 +756,220 @@ async def button_handler(
             + bq(small_caps("generating posters for all registered anime channels in background.")),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
         )
+        return
+
+    if data.startswith("fp_tmpl_"):
+        if not is_admin:
+            return
+        parts = data.split("_")
+        if len(parts) >= 4:
+            try:
+                fp_chat_id = int(parts[2])
+                fp_template = parts[3]
+                if _FILTER_POSTER_AVAILABLE:
+                    _set_default_poster_template(fp_chat_id, fp_template)
+                    await safe_answer(query, f"✅ Template set to {fp_template}")
+                    await safe_edit_text(
+                        query,
+                        get_filter_poster_settings_text(fp_chat_id),
+                        reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
+                    )
+            except Exception:
+                pass
+        return
+
+    if data.startswith("fp_mode_toggle_"):
+        if not is_admin:
+            return
+        try:
+            fp_chat_id = int(data.split("_")[-1])
+        except Exception:
+            fp_chat_id = 0
+        if _FILTER_POSTER_AVAILABLE:
+            try:
+                from filter_poster import get_filter_mode, set_filter_mode
+                cur = get_filter_mode(fp_chat_id)
+                new_mode = "text" if cur == "poster" else "poster"
+                set_filter_mode(fp_chat_id, new_mode)
+                label = "TEXT (link only)" if new_mode == "text" else "POSTER (full card)"
+                await safe_answer(query, f"✔️ Mode: {label}")
+                await safe_edit_text(
+                    query,
+                    get_filter_poster_settings_text(fp_chat_id),
+                    reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
+                )
+            except Exception:
+                pass
+        return
+
+    if data.startswith("fp_wm_toggle_"):
+        if not is_admin:
+            return
+        parts = data.split("_")
+        layer = parts[3]
+        try:
+            fp_chat_id = int(parts[4])
+        except Exception:
+            fp_chat_id = chat_id
+        if _FILTER_POSTER_AVAILABLE:
+            try:
+                from filter_poster import get_wm_layer, set_wm_layer
+                ldata = get_wm_layer(fp_chat_id, layer)
+                ldata["enabled"] = not ldata.get("enabled", False)
+                set_wm_layer(fp_chat_id, layer, ldata)
+                state_str = "enabled" if ldata["enabled"] else "disabled"
+                await safe_answer(query, f"✔️ Layer {layer.upper()} {state_str}")
+                await safe_edit_text(
+                    query,
+                    get_filter_poster_settings_text(fp_chat_id),
+                    reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
+                )
+            except Exception:
+                pass
+        return
+
+    if data.startswith("fp_wm_"):
+        if not is_admin:
+            return
+        parts = data.split("_")
+        layer = parts[2]
+        try:
+            fp_chat_id = int(parts[3])
+        except Exception:
+            fp_chat_id = chat_id
+        if not _FILTER_POSTER_AVAILABLE:
+            await safe_answer(query, "Filter poster module unavailable.")
+            return
+        try:
+            from filter_poster import get_wm_layer
+            ldata = get_wm_layer(fp_chat_id, layer)
+        except Exception:
+            ldata = {}
+        pos_list = "center | bottom | top | left | right | bottom-left | bottom-right | top-left | top-right"
+        layer_names = {"a": "PRIMARY TEXT", "b": "SECONDARY TEXT", "c": "STICKER / IMAGE"}
+        if layer == "c":
+            panel_text = (
+                b("WATERMARK LAYER C — STICKER / IMAGE") + "\n\n"
+                + bq(
+                    f"<b>Enabled:</b> {'🟢 Yes' if ldata.get('enabled') else '🔴 No'}\n"
+                    f"<b>Position:</b> {e(ldata.get('position', 'bottom-left'))}\n"
+                    f"<b>Scale:</b> {ldata.get('scale', 0.12)} (0.05–0.30)\n"
+                    f"<b>Opacity:</b> {ldata.get('opacity', 200)} (0–255)\n\n"
+                    "<b>To set sticker:</b> Send any Telegram sticker as a reply.\n"
+                    "<b>To set image:</b> Send: <code>https://url | position | scale | opacity</code>\n"
+                    f"<b>Positions:</b> {pos_list}"
+                )
+            )
+        else:
+            panel_text = (
+                b(f"WATERMARK LAYER {layer.upper()} — {layer_names.get(layer, '')}") + "\n\n"
+                + bq(
+                    f"<b>Enabled:</b> {'🟢 Yes' if ldata.get('enabled') else '🔴 No'}\n"
+                    f"<b>Text:</b> {e(ldata.get('text', '—'))}\n"
+                    f"<b>Position:</b> {e(ldata.get('position', 'bottom-right'))}\n"
+                    f"<b>Font size:</b> {ldata.get('font_size', 24)}\n"
+                    f"<b>Color:</b> {e(ldata.get('color', '#FFFFFF'))}\n"
+                    f"<b>Opacity:</b> {ldata.get('opacity', 150)} (0–255)\n\n"
+                    "<b>Send format:</b> <code>text | position | size | #color | opacity</code>\n"
+                    "<b>Example:</b> <code>BeatAnime | bottom-right | 24 | #FFFFFF | 150</code>\n"
+                    f"<b>Positions:</b> {pos_list}"
+                )
+            )
+        user_states[uid] = f"AWAITING_WM_LAYER_{layer.upper()}_{fp_chat_id}"
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        await safe_send_message(
+            context.bot, chat_id, panel_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "🟢 ENABLE" if not ldata.get("enabled") else "🔴 DISABLE",
+                    callback_data=f"fp_wm_toggle_{layer}_{fp_chat_id}",
+                )],
+                [_back_btn("admin_filter_poster"), _close_btn()],
+            ]),
+        )
+        return
+
+    if data == "fp_set_autodel":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_setting
+            cur_del = int(get_setting(f"filter_auto_delete_{chat_id}", "300"))
+        except Exception:
+            cur_del = 300
+        user_states[uid] = "AWAITING_FILTER_AUTODEL"
+        await safe_edit_text(
+            query,
+            b("FILTER AUTO-DELETE TIME") + "\n\n"
+            + bq(
+                f"<b>Current:</b> {cur_del}s ({cur_del // 60} min)\n\n"
+                "Send seconds before poster + link auto-deletes:\n"
+                "• <code>0</code> = never delete\n"
+                "• <code>300</code> = 5 minutes (default)\n"
+                "• <code>600</code> = 10 minutes\n"
+                "• <code>1800</code> = 30 minutes"
+            ),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
+        )
+        return
+
+    if data == "fp_set_linkexpiry":
+        if not is_admin:
+            return
+        from database_dual import get_setting
+        cur_exp = get_setting("link_expiry_override", str(LINK_EXPIRY_MINUTES))
+        user_states[uid] = "AWAITING_LINK_EXPIRY_FP"
+        await safe_edit_text(
+            query,
+            b("LINK EXPIRY MINUTES") + "\n\n"
+            + bq(
+                f"<b>Current:</b> {cur_exp} min\n\n"
+                "Send minutes the join link stays valid:\n"
+                "• <code>0</code> = permanent (no expiry)\n"
+                "• <code>5</code> = 5 minutes (default)\n"
+                "• <code>60</code> = 1 hour"
+            ),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
+        )
+        return
+
+    if data == "fp_view_cache":
+        if not is_admin:
+            return
+        count = _get_cache_count() if _FILTER_POSTER_AVAILABLE else 0
+        await safe_answer(query, f"📦 {count} posters cached")
+        return
+
+    if data == "fp_clear_cache":
+        if not is_admin:
+            return
+        if _FILTER_POSTER_AVAILABLE:
+            cleared = _clear_poster_cache()
+            await safe_answer(query, f"🗑 Cleared {cleared} cached posters")
+            try:
+                await safe_edit_text(
+                    query,
+                    get_filter_poster_settings_text(chat_id),
+                    reply_markup=build_filter_poster_settings_keyboard(chat_id),
+                )
+            except Exception:
+                pass
+        return
+
+    if data == "fp_channel_info":
+        if not is_admin:
+            return
+        try:
+            from filter_poster import POSTER_DB_CHANNEL as _PDC
+            if _PDC:
+                await safe_answer(query, f"Poster DB Channel: {_PDC}")
+            else:
+                await safe_answer(query, "Set POSTER_DB_CHANNEL in env to enable poster saving")
+        except Exception:
+            await safe_answer(query, "Filter poster module unavailable.")
         return
 
     # ── Feature flags ──────────────────────────────────────────────────────────
@@ -900,6 +1298,170 @@ async def button_handler(
         await safe_answer(query, small_caps("📤 exporting users…"))
         return
 
+    if data == "admin_import_users":
+        if not is_admin:
+            return
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        user_states[uid] = "AWAITING_IMPORT_USERS_FILE"
+        await safe_send_message(
+            context.bot, chat_id,
+            (
+                "<b> Import Users</b>\n\n"
+                "Send a <b>CSV</b> or <b>Excel (.xlsx)</b> file with user IDs.\n\n"
+                "<b>CSV format (columns):</b>\n"
+                "<code>user_id, username, first_name</code>\n\n"
+                "<b>Excel:</b> First column must be <code>user_id</code>.\n\n"
+                "Send the file now, or /cancel to abort."
+            ),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_back")]]),
+        )
+        return
+
+    if data == "admin_import_links":
+        if not is_admin:
+            return
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        user_states[uid] = "AWAITING_IMPORT_LINKS_FILE"
+        await safe_send_message(
+            context.bot, chat_id,
+            (
+                "<b> Import Links</b>\n\n"
+                "Send a <b>CSV</b> or <b>Excel (.xlsx)</b> file with link data.\n\n"
+                "<b>CSV columns:</b> <code>link_id, file_name, channel_id</code>\n\n"
+                "Send the file now, or /cancel to abort."
+            ),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_back")]]),
+        )
+        return
+
+    if data == "um_list_users":
+        if not is_admin:
+            return
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        from handlers.misc_cmds import listusers_command
+        context.args = []
+        await listusers_command(update, context)
+        return
+
+    if data == "um_search_user":
+        if not is_admin:
+            return
+        user_states[uid] = SEARCH_USER_INPUT
+        await safe_edit_text(
+            query,
+            b("🔍 Search User") + "\n\n" + bq(b("Send user ID or @username:")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="user_management")]]),
+        )
+        return
+
+    if data == "um_ban_user":
+        if not is_admin:
+            return
+        user_states[uid] = BAN_USER_INPUT
+        await safe_edit_text(
+            query,
+            b("🚫 Ban User") + "\n\n" + bq(b("Send user ID or @username to ban:")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="user_management")]]),
+        )
+        return
+
+    if data == "um_unban_user":
+        if not is_admin:
+            return
+        user_states[uid] = UNBAN_USER_INPUT
+        await safe_edit_text(
+            query,
+            b("✅ Unban User") + "\n\n" + bq(b("Send user ID or @username to unban:")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="user_management")]]),
+        )
+        return
+
+    if data == "um_delete_user":
+        if not is_admin:
+            return
+        user_states[uid] = DELETE_USER_INPUT
+        await safe_edit_text(
+            query,
+            b("🗑 Delete User") + "\n\n" + bq(b("Send the user ID to permanently delete from database:")),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="user_management")]]),
+        )
+        return
+
+    if data == "um_banned_list":
+        if not is_admin:
+            return
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute(
+                    "SELECT user_id, username, first_name FROM users WHERE banned = TRUE LIMIT 20"
+                )
+                banned = cur.fetchall() or []
+        except Exception:
+            banned = []
+        if not banned:
+            await safe_answer(query, "No banned users.")
+            return
+        text = b(f"🚫 Banned Users ({len(banned)}):") + "\n\n"
+        for buid, buname, bfname in banned:
+            text += f"• {e(bfname or '')} @{e(buname or '')} {code(str(buid))}\n"
+        await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup([[_back_btn("user_management")]]))
+        return
+
+    if data.startswith("user_page_"):
+        if not is_admin:
+            return
+        offset = int(data[len("user_page_"):])
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        from handlers.misc_cmds import listusers_command
+        context.args = [str(offset)]
+        await listusers_command(update, context)
+        return
+
+    if data.startswith("manage_user_"):
+        if not is_admin:
+            return
+        target_uid_mu = int(data[len("manage_user_"):])
+        try:
+            from database_dual import get_user_info_by_id
+            user_info = get_user_info_by_id(target_uid_mu)
+        except Exception:
+            user_info = None
+        if not user_info:
+            await safe_answer(query, "User not found.")
+            return
+        u_id, u_uname, u_fname, u_lname, u_joined, u_banned = user_info
+        name = f"{u_fname or ''} {u_lname or ''}".strip() or "N/A"
+        text = (
+            b("👤 User Details") + "\n\n"
+            f"<b>ID:</b> {code(str(u_id))}\n"
+            f"<b>Name:</b> {e(name)}\n"
+            f"<b>Username:</b> {'@' + e(u_uname) if u_uname else '—'}\n"
+            f"<b>Joined:</b> {code(str(u_joined)[:16])}\n"
+            f"<b>Status:</b> {'🚫 Banned' if u_banned else '✅ Active'}"
+        )
+        keyboard = []
+        if u_banned:
+            keyboard.append([bold_button("Unban", callback_data=f"user_unban_{u_id}")])
+        else:
+            keyboard.append([bold_button("🚫 Ban", callback_data=f"user_ban_{u_id}")])
+        keyboard.append([bold_button("Delete", callback_data=f"user_del_{u_id}")])
+        keyboard.append([_back_btn("user_management")])
+        await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
     if data.startswith("user_list_page_"):
         if not is_admin:
             return
@@ -1154,6 +1716,172 @@ async def button_handler(
         )
         return
 
+    if data == "af_set_delay":
+        if not is_admin:
+            return
+        user_states[uid] = "AWAITING_AF_DELAY"
+        await safe_edit_text(
+            query,
+            b(small_caps("⏱ set auto-forward delay")) + "\n\n"
+            + bq(small_caps("send delay in seconds (e.g. 30). send 0 for no delay.")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward")]]),
+        )
+        return
+
+    if data == "af_set_caption":
+        if not is_admin:
+            return
+        user_states[uid] = "AWAITING_AF_CAPTION"
+        await safe_edit_text(
+            query,
+            b(small_caps("✏️ set caption override")) + "\n\n"
+            + bq(small_caps("send the caption text to append to all forwarded messages.\nsend /clear to remove caption override.")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward")]]),
+        )
+        return
+
+    if data == "af_replacements_menu":
+        if not is_admin:
+            return
+        rows = []
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute("SELECT id, old_pattern, new_pattern FROM auto_forward_replacements ORDER BY id LIMIT 10")
+                rows = cur.fetchall() or []
+        except Exception:
+            pass
+        text = b(small_caps("🔄 text replacements")) + "\n\n"
+        if rows:
+            for r_id, old_p, new_p in rows:
+                text += f"• <code>{e(old_p)}</code> → <code>{e(new_p)}</code>\n"
+        else:
+            text += bq(small_caps("no replacements set."))
+        text += "\n\n" + bq(small_caps("to add: /autoforward replacements add old_text new_text"))
+        await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward")]]))
+        return
+
+    if data == "af_bulk":
+        if not is_admin:
+            return
+        user_states[uid] = "AWAITING_AF_BULK_COUNT"
+        await safe_edit_text(
+            query,
+            b(small_caps("📦 bulk forward")) + "\n\n"
+            + bq(small_caps("send the number of recent messages to forward from source channel (max 50).")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward")]]),
+        )
+        return
+
+    if data == "af_filters_menu":
+        if not is_admin:
+            return
+        dm_on = True
+        grp_on = True
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute(
+                    "SELECT enable_in_dm, enable_in_group FROM auto_forward_filters WHERE connection_id IS NULL LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row:
+                    dm_on, grp_on = bool(row[0]), bool(row[1])
+        except Exception:
+            pass
+        dm_icon = "✅" if dm_on else "❌"
+        grp_icon = "✅" if grp_on else "❌"
+        ftext = (
+            b("🔍 Auto-Forward Filters") + "\n\n"
+            + bq(
+                f"<b>Enable in DM:</b> {dm_icon}\n"
+                f"<b>Enable in Group:</b> {grp_icon}\n\n"
+                "<b>BLACKLIST:</b> Words that BLOCK a message from being forwarded.\n"
+                "<b>WHITELIST:</b> When set, ONLY messages with a whitelisted word are forwarded.\n\n"
+                "Leave whitelist empty to forward everything (except blacklisted)."
+            )
+        )
+        fkb = [
+            [bold_button(f"{dm_icon} Toggle DM", callback_data="af_toggle_dm"),
+             bold_button(f"{grp_icon} Toggle Group", callback_data="af_toggle_group")],
+            [bold_button("🚫 Blacklist Words", callback_data="af_blacklist"),
+             bold_button("✅ Whitelist Words", callback_data="af_whitelist")],
+            [bold_button("❓ Filter Guide", callback_data="af_filter_guide"),
+             _back_btn("admin_autoforward")],
+        ]
+        await safe_edit_text(query, ftext, reply_markup=InlineKeyboardMarkup(fkb))
+        return
+
+    if data == "af_filter_guide":
+        if not is_admin:
+            return
+        guide_text = (
+            b("📖 How Filters Work") + "\n\n"
+            + bq(
+                "<b>Example scenario:</b>\n"
+                "Forwarding from an anime channel but want to skip movie posts.\n\n"
+                "<b>Step 1:</b> Add <code>movie</code> to Blacklist — any post with 'movie' is skipped.\n\n"
+                "<b>Step 2 (optional):</b> Add <code>episode</code> to Whitelist — only 'episode' posts forward.\n\n"
+                "<b>Note:</b> If Whitelist is EMPTY, all messages pass (except blacklisted)."
+            )
+        )
+        await safe_edit_text(
+            query, guide_text,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("af_filters_menu")]]),
+        )
+        return
+
+    if data in ("af_toggle_dm", "af_toggle_group"):
+        if not is_admin:
+            return
+        col = "enable_in_dm" if data == "af_toggle_dm" else "enable_in_group"
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO auto_forward_filters (connection_id, enable_in_dm, enable_in_group)
+                    VALUES (NULL, TRUE, TRUE)
+                    ON CONFLICT DO NOTHING
+                """)
+                cur.execute(
+                    f"UPDATE auto_forward_filters SET {col} = NOT {col} WHERE connection_id IS NULL"
+                )
+        except Exception as exc:
+            logger.debug(f"af toggle error: {exc}")
+        await safe_answer(query, small_caps("filter toggled!"))
+        await button_handler(update, context, "af_filters_menu")
+        return
+
+    if data in ("af_blacklist", "af_whitelist"):
+        if not is_admin:
+            return
+        kind = "Blacklist" if data == "af_blacklist" else "Whitelist"
+        col = "blacklist_words" if data == "af_blacklist" else "whitelist_words"
+        words = ""
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute(
+                    f"SELECT {col} FROM auto_forward_filters WHERE connection_id IS NULL LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    words = row[0]
+        except Exception:
+            pass
+        await safe_edit_text(
+            query,
+            b(f" {kind} Words") + "\n\n"
+            + bq(
+                f"<b>Current:</b> {code(e(words or 'None'))}\n\n"
+                "Send new comma-separated words to set the list:\n"
+                "<i>e.g. word1, word2, word3</i>"
+            ),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("af_filters_menu")]]),
+        )
+        user_states[uid] = f"af_set_{col}"
+        return
+
     if data == "af_toggle_all":
         if not is_admin:
             return
@@ -1190,6 +1918,43 @@ async def button_handler(
             text += f"{status} {code(str(src))} → {code(str(tgt))}\n"
             keyboard.append([bold_button(f"{status} {str(src)[:15]} → {str(tgt)[:15]}", callback_data=f"af_conn_detail_{cid}")])
         keyboard.append([_back_btn("admin_autoforward")])
+        await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    if data.startswith("af_conn_detail_"):
+        if not is_admin:
+            return
+        conn_id = int(data[len("af_conn_detail_"):])
+        try:
+            from database_dual import db_manager
+            with db_manager.get_cursor() as cur:
+                cur.execute("""
+                    SELECT id, source_chat_id, target_chat_id, active,
+                           protect_content, silent, pin_message, delete_source, delay_seconds
+                    FROM auto_forward_connections WHERE id = %s
+                """, (conn_id,))
+                conn = cur.fetchone()
+        except Exception:
+            conn = None
+        if not conn:
+            await safe_answer(query, "Connection not found.")
+            return
+        cid, src, tgt, active, protect, silent, pin, delete_src, delay = conn
+        text = (
+            b(f"♻️ Connection #{cid}") + "\n\n"
+            f"<b>Source:</b> {code(str(src))}\n"
+            f"<b>Target:</b> {code(str(tgt))}\n"
+            f"<b>Active:</b> {'✅' if active else '❌'}\n"
+            f"<b>Protect Content:</b> {'✅' if protect else '❌'}\n"
+            f"<b>Silent:</b> {'✅' if silent else '❌'}\n"
+            f"<b>Pin:</b> {'✅' if pin else '❌'}\n"
+            f"<b>Delete Source:</b> {'✅' if delete_src else '❌'}\n"
+            f"<b>Delay:</b> {code(str(delay) + 's' if delay else '0s')}"
+        )
+        keyboard = [
+            [bold_button("Delete", callback_data=f"af_conn_del_{cid}"),
+             _back_btn("af_list_connections")],
+        ]
         await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
@@ -1253,6 +2018,27 @@ async def button_handler(
         await safe_edit_text(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    if data == "au_remove_manga":
+        if not is_admin:
+            return
+        await button_handler(update, context, "au_list_manga")
+        return
+
+    if data == "au_stats":
+        if not is_admin:
+            return
+        from api.mangadex import MangaTracker
+        rows = MangaTracker.get_all_tracked()
+        text_au = (
+            b(" Manga Tracking Stats") + "\n\n"
+            f"<b>Total tracked:</b> {code(str(len(rows)))}"
+        )
+        await safe_edit_text(
+            query, text_au,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoupdate")]]),
+        )
+        return
+
     if data.startswith("mdex_track_"):
         if not is_admin:
             await safe_answer(query, "Only admin can set up tracking.")
@@ -1276,6 +2062,35 @@ async def button_handler(
         await safe_edit_text(
             query, b(f"📚 {e(title)}") + "\n\n" + bq(b("Choose delivery mode:\n\nFull Manga — all chapters\nLatest Chapters — only new ones")),
             reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    if data.startswith("mdex_chapter_"):
+        ch_id_mc = data[len("mdex_chapter_"):]
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+        try:
+            from api.mangadex import MangaDexClient
+            pages = MangaDexClient.get_chapter_pages(ch_id_mc)
+        except Exception:
+            pages = None
+        text_mc = b("📖 Chapter") + "\n\n"
+        if pages:
+            base_url_mc, ch_hash_mc, filenames_mc = pages
+            text_mc += (
+                f"<b>Total Pages:</b> {code(str(len(filenames_mc)))}\n"
+                f"<b>Chapter ID:</b> {code(ch_id_mc)}\n\n"
+                + bq(b("Read this chapter online at MangaDex for the best experience."))
+            )
+        else:
+            text_mc += b("Could not load chapter page info.")
+        await safe_send_message(
+            context.bot, chat_id, text_mc,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📖 Read Now", url=f"https://mangadex.org/chapter/{ch_id_mc}")
+            ]]),
         )
         return
 
@@ -1480,6 +2295,44 @@ async def button_handler(
         )
         return
 
+    if data == "panel_img_toggle_source":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_setting, set_setting
+            current = get_setting("panel_image_source", "url") or "url"
+            new_src = "api" if current == "url" else "url"
+            set_setting("panel_image_source", new_src)
+            label = ("🌐 API-first (waifu.im → anilist → nekos)" if new_src == "api"
+                     else "🔗 URL-first (your custom URLs / PANEL_PICS env)")
+            await safe_answer(query, f"✅ Panel source: {label[:40]}", show_alert=True)
+            try:
+                from panel_image import clear_image_cache
+                clear_image_cache()
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.error(f"panel_img_toggle: {exc}")
+        await button_handler(update, context, "admin_settings")
+        return
+
+    if data == "panel_img_clear_urls":
+        if not is_admin:
+            return
+        try:
+            from database_dual import set_setting
+            set_setting("panel_image_urls", "[]")
+            try:
+                from panel_image import clear_image_cache
+                clear_image_cache()
+            except Exception:
+                pass
+            await safe_answer(query, "✅ Custom URL list cleared. Using PANEL_PICS env or APIs.", show_alert=True)
+        except Exception as exc:
+            await safe_answer(query, f"❌ {str(exc)[:60]}", show_alert=True)
+        await button_handler(update, context, "admin_settings")
+        return
+
     if data == "panel_img_manage":
         if not is_admin:
             return
@@ -1621,6 +2474,49 @@ async def button_handler(
         await send_user_features_panel(update, context, query, chat_id, page)
         return
 
+    if data.startswith("feat_"):
+        if not is_admin:
+            return
+        feat_map = {
+            "feat_couple":       ("/couple", "Tag two users as a couple. Usage: /couple @user1 @user2"),
+            "feat_slap":         ("/slap", "Slap someone! Reply to a message with /slap"),
+            "feat_hug":          ("/hug", "Hug someone! Reply to a message with /hug"),
+            "feat_kiss":         ("/kiss", "Kiss someone! Reply to a message with /kiss"),
+            "feat_pat":          ("/pat", "Pat someone! Reply to a message with /pat"),
+            "feat_inline_search":("@Bot query", "Inline anime search — type @YourBot in any chat then anime name."),
+            "feat_reactions":    ("/react", "Reaction GIFs. Reply to a message with /slap /hug /pat etc."),
+            "feat_chatbot":      ("/chatbot on|off", "Toggle AI chatbot mode in a group."),
+            "feat_truth_dare":   ("/truth or /dare", "Play Truth or Dare in a group!"),
+            "feat_notes":        ("/save notename text", "Save group notes. Retrieve with #notename"),
+            "feat_warns":        ("/warn @user", "Warn users. Also: /unwarn /warns /resetwarns"),
+            "feat_muting":       ("/mute @user", "Mute users. Also: /unmute /tmute"),
+            "feat_bans":         ("/ban @user", "Ban users. Also: /unban /tban /sban"),
+            "feat_rules":        ("/setrules | /rules", "Set and show group rules."),
+            "feat_airing":       ("/airing Demon Slayer", "Check next episode airing time from AniList."),
+            "feat_character":    ("/character Tanjiro", "Get anime character info from AniList."),
+            "feat_anime_info":   ("/anime Naruto", "Get landscape poster + full anime info."),
+            "feat_afk":          ("/afk reason", "Set AFK status. Bot auto-replies when tagged."),
+        }
+        if data == "feat_chatbot":
+            from database_dual import get_setting as _gs_feat, set_setting as _ss_feat
+            chat_key = f"chatbot_{chat_id}"
+            current_chatbot = (_gs_feat(chat_key, "true") or "true").lower()
+            new_val_chatbot = "false" if current_chatbot == "true" else "true"
+            _ss_feat(chat_key, new_val_chatbot)
+            status_chatbot = small_caps("enabled ✅") if new_val_chatbot == "true" else small_caps("disabled 🔕")
+            try:
+                await query.answer(small_caps(f"chatbot {status_chatbot}"), show_alert=True)
+            except Exception:
+                pass
+            return
+        info = feat_map.get(data, (data.replace("feat_", "/"), "Feature command."))
+        cmd_feat, desc_feat = info
+        try:
+            await query.answer(f"{cmd_feat} — {desc_feat[:100]}", show_alert=True)
+        except Exception:
+            pass
+        return
+
     if data == "about_bot":
         try:
             await query.delete_message()
@@ -1669,6 +2565,85 @@ async def button_handler(
             + bq(b(small_caps("send the channel id, @username, or forward a post:"))),
             reply_markup=InlineKeyboardMarkup([[_back_btn("admin_channel_welcome"), _close_btn()]]),
         )
+        return
+
+    if data == "cw_list":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_all_channel_welcomes
+            channels = get_all_channel_welcomes()
+        except Exception:
+            channels = []
+        if not channels:
+            await safe_answer(query, small_caps("no channels configured yet."))
+            return
+        text = b("📋 " + small_caps("configured channel welcomes:")) + "\n\n"
+        for ch_id_l, enabled_l, wtext_l in channels:
+            icon = "🟢" if enabled_l else "🔴"
+            text += f"{icon} <code>{ch_id_l}</code>\n"
+            if wtext_l:
+                text += f"   {e((wtext_l)[:60])}…\n"
+        await safe_edit_text(
+            query, text,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_channel_welcome"), _close_btn()]]),
+        )
+        return
+
+    if data == "cw_remove_menu":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_all_channel_welcomes
+            channels = get_all_channel_welcomes()
+        except Exception:
+            channels = []
+        if not channels:
+            await safe_answer(query, small_caps("nothing to remove."))
+            return
+        btns = [[InlineKeyboardButton(f"🗑 {ch_id_r}", callback_data=f"cw_del_{ch_id_r}")]
+                for ch_id_r, _, _ in channels[:10]]
+        btns.append([_back_btn("admin_channel_welcome"), _close_btn()])
+        await safe_edit_text(
+            query, b(small_caps("select channel to remove:")),
+            reply_markup=InlineKeyboardMarkup(btns),
+        )
+        return
+
+    if data.startswith("cw_edit_"):
+        if not is_admin:
+            return
+        ch_id_ce = int(data[len("cw_edit_"):])
+        try:
+            from database_dual import get_channel_welcome
+            s = get_channel_welcome(ch_id_ce) or {}
+        except Exception:
+            s = {}
+        wtext_ce   = s.get("welcome_text", "")
+        img_fid_ce = s.get("image_file_id", "")
+        img_url_ce = s.get("image_url", "")
+        btns_json  = s.get("buttons", [])
+        enabled_ce = s.get("enabled", True)
+        text_ce = (
+            b(small_caps(f"edit channel welcome: {ch_id_ce}")) + "\n\n"
+            + bq(
+                f"<b>{small_caps('enabled')}:</b> {'🟢 yes' if enabled_ce else '🔴 no'}\n"
+                f"<b>{small_caps('text')}:</b> {e((wtext_ce)[:60]) if wtext_ce else small_caps('not set')}\n"
+                f"<b>{small_caps('image')}:</b> {'✅ set' if img_fid_ce or img_url_ce else small_caps('not set')}\n"
+                f"<b>{small_caps('buttons')}:</b> {len(btns_json)} {small_caps('configured')}"
+            )
+        )
+        context.user_data["cw_editing_channel"] = ch_id_ce
+        edit_kb = [
+            [InlineKeyboardButton(small_caps("✏️ set text"),    callback_data=f"cw_settext_{ch_id_ce}"),
+             InlineKeyboardButton(small_caps("🖼 set image"),   callback_data=f"cw_setimg_{ch_id_ce}")],
+            [InlineKeyboardButton(small_caps("🔘 set buttons"), callback_data=f"cw_setbtns_{ch_id_ce}"),
+             InlineKeyboardButton(small_caps("⚡ toggle on/off"), callback_data=f"cw_toggle_{ch_id_ce}")],
+            [InlineKeyboardButton(small_caps("👁 preview"),     callback_data=f"cw_preview_{ch_id_ce}"),
+             InlineKeyboardButton(small_caps("🗑 remove"),      callback_data=f"cw_del_{ch_id_ce}")],
+            [_back_btn("admin_channel_welcome"), _close_btn()],
+        ]
+        await safe_edit_text(query, text_ce, reply_markup=InlineKeyboardMarkup(edit_kb))
         return
 
     if data.startswith("cw_settext_"):
@@ -1837,6 +2812,50 @@ async def button_handler(
         await safe_send_message(context.bot, chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
+    if data == "admin_anime_links":
+        if not is_admin:
+            return
+        try:
+            from database_dual import get_all_links
+            raw = get_all_links(limit=100, offset=0)
+            seen = set()
+            rows_al = []
+            for row in (raw or []):
+                t = (row[2] or "").strip()
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    rows_al.append(row)
+        except Exception:
+            rows_al = []
+        text_al = b(small_caps(f"🎌 filter keywords from generated links ({len(rows_al)})")) + "\n\n"
+        if rows_al:
+            for row in rows_al[:20]:
+                ch_id_al   = row[1]
+                ch_title_al = row[2] or ch_id_al
+                text_al += f"• <b>{e(ch_title_al)}</b> → <code>{e(str(ch_id_al))}</code>\n"
+        else:
+            text_al += bq(small_caps(
+                "no links yet.\n\n"
+                "use gen link in the channels panel to create one.\n"
+                "the link title automatically becomes a filter keyword."
+            ))
+        text_al += (
+            "\n\n" + bq(
+                b(small_caps("how it works:")) + "\n"
+                + small_caps("generate a channel link → the title becomes a filter keyword. "
+                             "when any user types that title in a group, they get a poster + join button.")
+            )
+        )
+        await safe_send_message(
+            context.bot, chat_id, text_al,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("manage_force_sub"), _close_btn()]]),
+        )
+        return
+
+    if data.startswith("del_acl_"):
+        await safe_answer(query, small_caps("use /removechannel or manage links from the channels panel."), show_alert=True)
+        return
+
     if data == "filter_toggle_dm":
         if not is_admin:
             return
@@ -1934,6 +2953,20 @@ async def button_handler(
         new_val = "false" if current == "true" else "true"
         set_setting("fwd_with_tag", new_val)
         await safe_answer(query, f"📨 Forward Tag: {'ON' if new_val == 'true' else 'OFF'}")
+        return
+
+    if data == "fwd_toggle_private":
+        if not is_admin:
+            return
+        from database_dual import get_setting, set_setting
+        current = get_setting("fwd_private_channel", "false")
+        new_val = "false" if current == "true" else "true"
+        set_setting("fwd_private_channel", new_val)
+        label = "ON (private channels enabled)" if new_val == "true" else "OFF"
+        try:
+            await query.answer(f"🔒 Private Channel: {label}", show_alert=True)
+        except Exception:
+            pass
         return
 
     # ── fp_set_join_btn_* ──────────────────────────────────────────────────────
