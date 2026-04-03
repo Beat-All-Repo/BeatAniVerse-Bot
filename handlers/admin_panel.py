@@ -552,13 +552,14 @@ async def show_user_management_panel(update, context, query=None) -> None:
         )
     )
     grid = [
-        _btn("LIST USERS",   "user_list_page_0"),
-        _btn("SEARCH",       "user_search"),
-        _btn("BAN USER",     "user_ban_input"),
-        _btn("UNBAN USER",   "user_unban_input"),
-        _btn("DELETE USER",  "user_delete_input"),
+        _btn("LIST USERS",   "um_list_users"),
+        _btn("SEARCH",       "um_search_user"),
+        _btn("BAN USER",     "um_ban_user"),
+        _btn("UNBAN USER",   "um_unban_user"),
+        _btn("DELETE USER",  "um_delete_user"),
+        _btn("BANNED LIST",  "um_banned_list"),
         _btn("EXPORT CSV",   "admin_export_users_quick"),
-        _btn("BLOCKED LIST", "user_blocked_list"),
+        _btn("IMPORT USERS", "admin_import_users"),
         _btn("BROADCAST",    "admin_broadcast_start"),
         _btn("STATS",        "admin_stats"),
     ]
@@ -634,19 +635,43 @@ async def show_settings_panel(update, context, query=None) -> None:
             f"<b>{small_caps('GC Delay')}:</b> <code>{e(gc_delay_val)}s</code>"
         )
     )
+    # Load extra status info for display
+    try:
+        from database_dual import get_setting as _gs_sp
+        spam_on = _gs_sp("spam_protection_enabled", "true") == "true"
+        wm_on   = _gs_sp("watermarks_enabled", "true") == "true"
+        link_exp = _gs_sp("link_expiry_override", str(LINK_EXPIRY_MINUTES))
+    except Exception:
+        spam_on = wm_on = True
+        link_exp = str(LINK_EXPIRY_MINUTES)
+
+    text += (
+        "\n\n" + bq(
+            f"<b>{small_caps('Spam Protect')}:</b> {'✅ ON' if spam_on else '❌ OFF'}\n"
+            f"<b>{small_caps('Watermarks')}:</b> {'✅ ON' if wm_on else '❌ OFF'}\n"
+            f"<b>{small_caps('Link Expiry')}:</b> <code>{e(link_exp)} min</code>"
+        )
+    )
+
     grid = [
-        _btn("MAINTENANCE", "toggle_maintenance"),
-        _btn("CLONE REDIRECT", "toggle_clone_redirect"),
-        _btn("CLEAN GC", "toggle_clean_gc"),
-        _btn("SET MAIN CHANNEL", "admin_set_main_channel"),
-        _btn("LINK EXPIRY", "admin_set_link_expiry"),
-        _btn("AUTO DELETE", "toggle_auto_delete"),
-        _btn("DM DEL DELAY", "set_dm_del_delay"),
-        _btn("GC DEL DELAY", "set_gc_del_delay"),
-        _btn("CATEGORY SETTINGS", "admin_category_settings"),
-        _btn("FEATURE FLAGS", "admin_feature_flags"),
-        _btn("ENV VARS", "admin_env_panel"),
-        _btn("TEXT STYLE", "admin_text_style"),
+        _btn("MAINTENANCE",     "toggle_maintenance"),
+        _btn("CLONE REDIRECT",  "toggle_clone_redirect"),
+        _btn("CLEAN GC",        "toggle_clean_gc"),
+        _btn("SPAM PROTECT",    "admin_spam_settings"),
+        _btn("WATERMARKS",      "admin_watermarks_toggle"),
+        _btn("BACKUP CHANNEL",  "set_backup_channel"),
+        _btn("LINK EXPIRY",     "admin_link_expiry"),
+        _btn("SET MAIN CHAN",   "admin_set_main_channel"),
+        _btn("AUTO DELETE",     "toggle_auto_delete"),
+        _btn("DM DEL DELAY",   "set_dm_del_delay"),
+        _btn("GC DEL DELAY",   "set_gc_del_delay"),
+        _btn("FILTER POSTER",   "admin_filter_poster"),
+        _btn("TEXT STYLE",      "admin_text_style"),
+        _btn("BTN STYLE",       "admin_btn_style"),
+        _btn("ENV VARS",        "admin_env_panel"),
+        _btn("PANEL IMAGES",    "panel_img_add_urls"),
+        _btn("IMG SRC TOGGLE",  "panel_img_toggle_source"),
+        _btn("IMG CACHE ♻️",    "admin_clear_img_cache"),
     ]
     rows = _grid3(grid)
     rows.append([_back_btn("admin_back"), _close_btn()])
@@ -696,11 +721,14 @@ async def _show_channels_panel(update, context, query=None) -> None:
         text += bq(small_caps("no force-sub channels configured"))
 
     grid = [
-        _btn("➕ ADD CHANNEL", "fsub_add"),
-        _btn("➖ REMOVE", "fsub_remove"),
-        _btn("✅ VERIFY ALL", "fsub_verify"),
-        _btn("📊 STATS", "fsub_link_stats"),
-        _btn("🔗 GENERATE LINK", "generate_links"),
+        _btn("➕ ADD CHANNEL",    "fsub_add"),
+        _btn("➖ REMOVE CHANNEL", "fsub_remove_menu"),
+        _btn("📋 LIST ALL",       "fsub_list_full"),
+        _btn("📊 STATS",          "fsub_link_stats"),
+        _btn("🔗 GENERATE LINK",  "generate_links"),
+        _btn("🎌 ANIME LINKS",    "admin_anime_links"),
+        _btn("📩 FWD SOURCE",     "fsub_fwd_source"),
+        _btn("📣 CHANNEL WELCOME","admin_channel_welcome"),
     ]
     rows = _grid3(grid)
     rows.append([_back_btn("admin_back"), _close_btn()])
@@ -770,7 +798,7 @@ async def show_fwd_source_panel(context, chat_id: int) -> None:
     fwd_on     = get_setting("autoforward_enabled", "false") == "true"
 
     text = (
-        b(small_caps("🔄 auto-forward settings")) + "\n\n"
+        b(small_caps(" auto-forward settings")) + "\n\n"
         + bq(
             f"<b>{small_caps('Status')}:</b> {'✅ ON' if fwd_on else '❌ OFF'}\n"
             f"<b>{small_caps('Source')}:</b> <code>{e(fwd_source)}</code>\n"
