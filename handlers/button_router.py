@@ -2984,5 +2984,95 @@ async def button_handler(
         )
         return
 
+
+    # ── Module info buttons (admin panel page 5) ───────────────────────────────
+    if data.startswith("mod_"):
+        if not is_admin:
+            return
+        # Map callback → (display name, commands list, description)
+        _MOD_INFO = {
+            "mod_admin":       ("Admins",          ["/pinned", "/invitelink", "/setgtitle", "/setdesc", "/setgpic"],
+                                "Group admin tools — pin messages, manage group title, description, and profile picture."),
+            "mod_antiflood":   ("Anti-Flood",       ["/setflood", "/flood"],
+                                "Auto-kick/mute/ban users who send too many messages too fast."),
+            "mod_approve":     ("Approve",          ["/approve", "/unapprove", "/approved", "/unapproveall"],
+                                "Approve trusted users so they bypass blacklists and other restrictions."),
+            "mod_blacklist":   ("Blacklist",        ["/addblacklist", "/unblacklist", "/blacklist"],
+                                "Auto-delete messages containing banned words or phrases."),
+            "mod_blsticker":   ("BL Stickers",      ["/blsticker", "/unblsticker", "/blstickermode"],
+                                "Blacklist specific stickers from being sent in the group."),
+            "mod_chatbot":     ("Chatbot",          ["/chatbot"],
+                                "AI chatbot — responds when tagged or replied to. Toggle on/off per group."),
+            "mod_cleaner":     ("Cleaner",          ["/cleanblue on/off"],
+                                "Auto-delete blue text (service messages) like join/leave/pin notifications."),
+            "mod_connection":  ("Connection",       ["/connect", "/disconnect", "/connection"],
+                                "Connect to a group from PM to manage it without being in the chat."),
+            "mod_currency":    ("Currency",         ["/cash <amount> <from> <to>"],
+                                "Live currency conversion. Example: /cash 100 USD INR"),
+            "mod_custfilters": ("Filters",          ["/filter <word> <reply>", "/stop <word>", "/filters"],
+                                "Custom keyword auto-replies. When someone says a word, bot responds automatically."),
+            "mod_globalbans":  ("Anti-Spam",        ["/gban <user>", "/ungban", "/gbanlist"],
+                                "Global ban system — banned users are blocked across all groups the bot manages."),
+            "mod_imdb":        ("IMDb",             ["/imdb <title>"],
+                                "Search for movie/show info from IMDb with ratings, plot, and cast."),
+            "mod_locks":       ("Locks",            ["/lock <type>", "/unlock <type>", "/locktypes"],
+                                "Lock specific message types (media, stickers, links, polls etc.) in groups."),
+            "mod_logchannel":  ("Log Channel",      ["/setlog <channel>", "/unsetlog", "/logchannel"],
+                                "Set a channel to receive logs of bans, warns, and admin actions."),
+            "mod_ping":        ("Ping",             ["/ping"],
+                                "Check if the bot is alive and measure response latency."),
+            "mod_purge":       ("Purge",            ["/purge", "/del"],
+                                "Delete multiple messages at once. Reply to a message and use /purge."),
+            "mod_reporting":   ("Reports",          ["/report", "/reports on/off"],
+                                "Allow users to @report messages to admins. Admins can toggle this on/off."),
+            "mod_sed":         ("Sed/Regex",        ["s/old/new"],
+                                "Edit messages with sed-like syntax. Reply with s/old/new to correct yourself."),
+            "mod_shell":       ("Shell",            ["/shell <cmd>"],
+                                "Run shell commands on the server (owner only, use with caution)."),
+            "mod_speedtest":   ("Speed Test",       ["/speedtest"],
+                                "Run an internet speed test on the server and report download/upload speeds."),
+            "mod_stickers":    ("Stickers",         ["/kang", "/stickerid", "/getsticker", "/stickers"],
+                                "Steal stickers into a pack, get sticker file IDs, and manage sticker packs."),
+            "mod_tagall":      ("Tag All",          ["/tagall", "/tag"],
+                                "Tag all members in a group. Admins only. Use sparingly!"),
+            "mod_translator":  ("Translator",       ["/tr <lang>", "/tl <lang>"],
+                                "Translate messages. Reply to any message with /tr en to translate to English."),
+            "mod_truthdare":   ("Truth or Dare",    ["/truth", "/dare"],
+                                "Play Truth or Dare in a group! Gets questions/dares from a built-in list."),
+            "mod_ud":          ("Urban Dict",       ["/ud <word>"],
+                                "Look up slang definitions from Urban Dictionary."),
+            "mod_wallpaper":   ("Wallpaper",        ["/wall <query>"],
+                                "Search and send wallpapers from Wallhaven directly in Telegram."),
+            "mod_wiki":        ("Wikipedia",        ["/wiki <query>"],
+                                "Search Wikipedia and get a summary of any topic."),
+            "mod_writetool":   ("Write Tool",       ["/write <text>"],
+                                "Generate a handwritten-style image of any text you send."),
+            "mod_animequotes": ("Anime Quotes",     ["/quote", "/animequote"],
+                                "Get random inspirational quotes from famous anime characters."),
+            "mod_gettime":     ("Time",             ["/time <city>"],
+                                "Get the current time in any city or timezone around the world."),
+            "mod_badwords":    ("Bad Words",        ["/addword", "/rmword", "/badwords", "/wordaction"],
+                                "Filter profanity and custom bad words with configurable punishments."),
+        }
+        info = _MOD_INFO.get(data)
+        if info:
+            mod_label, cmds, desc = info
+            cmds_text = " | ".join(f"<code>{c}</code>" for c in cmds) if cmds else small_caps("see /help for commands")
+            msg = (
+                b(f"📦 {small_caps(mod_label)}") + "\n\n"
+                + bq(small_caps(desc)) + "\n\n"
+                + b(small_caps("commands: ")) + cmds_text
+            )
+            try:
+                await query.answer(f"📦 {mod_label} — {desc[:80]}", show_alert=True)
+            except Exception:
+                pass
+        else:
+            try:
+                await query.answer(f"Module: {data.replace('mod_', '')}", show_alert=True)
+            except Exception:
+                pass
+        return
+
     # ── Unhandled fallback ─────────────────────────────────────────────────────
     logger.debug(f"Unhandled callback: {data!r} from user {uid}")
