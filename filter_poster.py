@@ -58,6 +58,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from telegram import Update
 from telegram.ext import ContextTypes
+from typing import Optional
 
 
 import requests
