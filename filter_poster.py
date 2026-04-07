@@ -1114,29 +1114,53 @@ async def _deliver_poster_mode(
 #  PUBLIC ENTRY POINT — called from group_message_handler in bot.py
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def get_or_generate_poster(
+async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+    chat_id = update.effective_chat.id
+    reply_to = update.message.message_id
+
+    if len(text) < 3 or len(text) > 100 or text.startswith('/'):
+        return
+
+    if not get_filter_poster_enabled(chat_id):
+        return
+
+    template = get_filter_template(chat_id)
+    media_type = "ANIME"
+    auto_delete = get_auto_delete_seconds(chat_id)
+    link_exp = get_link_expiry_minutes(chat_id)
+
+    success = await _get_or_generate_poster_internal(
+        bot=context.bot,
+        chat_id=chat_id,
+        title=text,
+        template=template,
+        media_type=media_type,
+        reply_to_message_id=reply_to,
+        auto_delete_seconds=auto_delete,
+        link_expiry_minutes=link_exp,
+    )
+
+    if not success:
+        try:
+            await update.message.reply_text("❌ Couldn't generate poster right now.", quote=True)
+        except Exception:
+            pass
+
+
+async def _get_or_generate_poster_internal(
     bot: Any,
     chat_id: int,
     title: str,
-    template: str        = "ani",
-    media_type: str      = "ANIME",
+    template: str = "ani",
+    media_type: str = "ANIME",
     reply_to_message_id: Optional[int] = None,
     auto_delete_seconds: int = 300,
     link_expiry_minutes: int = 5,
 ) -> bool:
-    """
-    Main entry point for filter-triggered poster delivery.
-
-    Reads the chat's delivery mode from DB:
-      • "text"   → MODE 1: text-only "here is your link" + join button
-      • "poster" → MODE 2: full layered poster + caption + join button
-
-    Both modes:
-      ✅ Expirable Telegram invite link
-      ✅ Auto-delete after auto_delete_seconds
-      ✅ Global text style (small caps if enabled)
-      ✅ All 3 watermark layers applied (poster mode only)
-    """
     mode = get_filter_mode(chat_id)
 
     if mode == "text":
