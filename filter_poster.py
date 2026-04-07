@@ -56,6 +56,10 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
+from telegram import Update
+from telegram.ext import ContextTypes
+
+
 import requests
 
 logger = logging.getLogger(__name__)
