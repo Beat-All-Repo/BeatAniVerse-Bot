@@ -1166,6 +1166,7 @@ async def get_or_generate_poster(
 # ═════════════════════════════════════════════════════════════════════════════
 
 def get_filter_poster_settings_text(chat_id: int = 0) -> str:
+    """Generate formatted text for filter poster settings panel."""
     mode     = get_filter_mode(chat_id)
     enabled  = get_filter_poster_enabled(chat_id)
     template = get_filter_template(chat_id)
@@ -1179,9 +1180,9 @@ def get_filter_poster_settings_text(chat_id: int = 0) -> str:
     lb = get_wm_layer(chat_id, "b")
     lc = get_wm_layer(chat_id, "c")
 
-    la_info = f"{la.get('text','—')} @ {la.get('position','?')}" if la.get("enabled") else "Off"
-    lb_info = f"{lb.get('text','—')} @ {lb.get('position','?')}" if lb.get("enabled") else "Off"
-    lc_info = f"Sticker/Image @ {lc.get('position','?')}" if lc.get("enabled") else "Off"
+    la_info = f"{la.get('text','—')} @ {la.get('position','?')}" if la.get("enabled", False) else "Off"
+    lb_info = f"{lb.get('text','—')} @ {lb.get('position','?')}" if lb.get("enabled", False) else "Off"
+    lc_info = f"Sticker/Image @ {lc.get('position','?')}" if lc.get("enabled", False) or lc.get("file_id") else "Off"
 
     mode_label = _styled_plain("TEXT (link only)") if mode == "text" else _styled_plain("POSTER (full card)")
 
@@ -1206,7 +1207,7 @@ def get_filter_poster_settings_text(chat_id: int = 0) -> str:
 
 
 def build_filter_poster_settings_keyboard(chat_id: int = 0) -> Any:
-    """Build the 3x3 admin panel keyboard for filter poster settings."""
+    """Build the admin panel keyboard for filter poster settings."""
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
     enabled  = get_filter_poster_enabled(chat_id)
@@ -1214,57 +1215,76 @@ def build_filter_poster_settings_keyboard(chat_id: int = 0) -> Any:
     template = get_filter_template(chat_id)
 
     def _b(label: str, cb: str) -> InlineKeyboardButton:
-        # Use the bot's _style_label if available — else raw
+        # Try to use bot's styling function if available, otherwise plain text
         try:
             from bot import _style_label
             return InlineKeyboardButton(_style_label(label), callback_data=cb)
         except Exception:
             return InlineKeyboardButton(label, callback_data=cb)
 
-    tmpl_row1 = [_b("ani",   f"fp_tmpl_{chat_id}_ani"),
-                 _b("crun",  f"fp_tmpl_{chat_id}_crun"),
-                 _b("net",   f"fp_tmpl_{chat_id}_net")]
-    tmpl_row2 = [_b("dark",  f"fp_tmpl_{chat_id}_dark"),
-                 _b("light", f"fp_tmpl_{chat_id}_light"),
-                 _b("mod",   f"fp_tmpl_{chat_id}_mod")]
+    tmpl_row1 = [
+        _b("ani",   f"fp_tmpl_{chat_id}_ani"),
+        _b("crun",  f"fp_tmpl_{chat_id}_crun"),
+        _b("net",   f"fp_tmpl_{chat_id}_net")
+    ]
+    tmpl_row2 = [
+        _b("dark",  f"fp_tmpl_{chat_id}_dark"),
+        _b("light", f"fp_tmpl_{chat_id}_light"),
+        _b("mod",   f"fp_tmpl_{chat_id}_mod")
+    ]
 
     mode_label = "MODE: POSTER" if mode == "poster" else "MODE: TEXT"
 
     rows = [
-        [InlineKeyboardButton(
-            ("🟢 " if enabled else "🔴 ") + ("ON" if enabled else "OFF"),
-            callback_data=f"fp_toggle_{chat_id}",
-        ),
-        InlineKeyboardButton(mode_label, callback_data=f"fp_mode_toggle_{chat_id}")],
+        [
+            InlineKeyboardButton(
+                ("🟢 " if enabled else "🔴 ") + ("ON" if enabled else "OFF"),
+                callback_data=f"fp_toggle_{chat_id}",
+            ),
+            InlineKeyboardButton(mode_label, callback_data=f"fp_mode_toggle_{chat_id}")
+        ],
         tmpl_row1,
         tmpl_row2,
-        [_b("WM LAYER A", f"fp_wm_a_{chat_id}"),
-         _b("WM LAYER B", f"fp_wm_b_{chat_id}"),
-         _b("WM LAYER C", f"fp_wm_c_{chat_id}")],
-        [_b("AUTO DEL", "fp_set_autodel"),
-         _b("LINK EXPIRY", "fp_set_linkexpiry"),
-         _b("♻️ CACHE", "fp_view_cache")],
-        [_b("CLEAR CACHE", "fp_clear_cache"),
-         _b("DB CHANNEL", "fp_channel_info")],
-        [_b("✏️ JOIN BTN TEXT", f"fp_set_join_btn_{chat_id}"),
-         _b("⏱ LINK EXPIRY", "fp_set_linkexpiry")],
+        [
+            _b("WM LAYER A", f"fp_wm_a_{chat_id}"),
+            _b("WM LAYER B", f"fp_wm_b_{chat_id}"),
+            _b("WM LAYER C", f"fp_wm_c_{chat_id}")
+        ],
+        [
+            _b("AUTO DEL", "fp_set_autodel"),
+            _b("LINK EXPIRY", "fp_set_linkexpiry"),
+            _b("♻️ CACHE", "fp_view_cache")
+        ],
+        [
+            _b("CLEAR CACHE", "fp_clear_cache"),
+            _b("DB CHANNEL", "fp_channel_info")
+        ],
+        [
+            _b("✏️ JOIN BTN TEXT", f"fp_set_join_btn_{chat_id}"),
+            _b("⏱ LINK EXPIRY", "fp_set_linkexpiry")
+        ],
         # Pre-generate posters for all registered anime channel links
-        [InlineKeyboardButton(
-            "🎌 PRE-GEN ALL POSTERS",
-            callback_data=f"fp_pregen_all_{chat_id}",
-        )],
-        [InlineKeyboardButton("🔙 BACK", callback_data="admin_settings"),
-         InlineKeyboardButton("CLOSE", callback_data="close_message")],
+        [
+            InlineKeyboardButton(
+                "🎌 PRE-GEN ALL POSTERS",
+                callback_data=f"fp_pregen_all_{chat_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton("🔙 BACK", callback_data="admin_settings"),
+            InlineKeyboardButton("CLOSE", callback_data="close_message")
+        ],
     ]
     return InlineKeyboardMarkup(rows)
 
 
 def _get_cache_count() -> int:
+    """Return total number of cached posters (memory + DB)."""
     try:
         from database_dual import _pg_exec, _MG
         row = _pg_exec("SELECT COUNT(*) FROM poster_cache")
-        if row:
-            return row[0]
+        if row and row[0] is not None:
+            return int(row[0])
         if _MG.db is not None:
             return _MG.db.poster_cache.count_documents({})
     except Exception:
@@ -1273,22 +1293,27 @@ def _get_cache_count() -> int:
 
 
 def _get_filter_poster_enabled(chat_id: int) -> bool:
+    """Wrapper for consistency with admin panel calls."""
     return get_filter_poster_enabled(chat_id)
 
 
 def _set_filter_poster_enabled(chat_id: int, enabled: bool) -> None:
+    """Wrapper for consistency with admin panel calls."""
     set_filter_poster_enabled(chat_id, enabled)
 
 
 def _get_default_poster_template(chat_id: int) -> str:
+    """Wrapper for consistency with admin panel calls."""
     return get_filter_template(chat_id)
 
 
 def _set_default_poster_template(chat_id: int, template: str) -> None:
+    """Wrapper for consistency with admin panel calls."""
     set_filter_template(chat_id, template)
 
 
 def _clear_poster_cache() -> int:
+    """Clear all poster cache and return how many were deleted."""
     count = _get_cache_count()
     _poster_cache.clear()
     try:
@@ -1296,6 +1321,6 @@ def _clear_poster_cache() -> int:
         _pg_run("DELETE FROM poster_cache")
         if _MG.db is not None:
             _MG.db.poster_cache.delete_many({})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Failed to clear DB poster cache: {exc}")
     return count
