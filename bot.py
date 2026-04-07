@@ -3,7 +3,7 @@
 """
 bot.py — Entry point for BeatAnimeVerse Bot
 ============================================
-This file is intentionally slim (~200 lines).
+This file is intentionally slim (\~200 lines).
 All logic lives in the appropriate modules under:
   core/         — Config, utilities, helpers, state, filters
   api/          — AniList, TMDB, MangaDex clients
@@ -189,17 +189,17 @@ def _register_all_handlers(app: Application) -> None:
 
     # Note triggers — #notename
     app.add_handler(MessageHandler(
-        filters.Regex(r'^#[\w]+') & ~filters.COMMAND, note_trigger_handler
+        filters.Regex(r'^#[\w]+') & \~filters.COMMAND, note_trigger_handler
     ))
     # AFK auto-reply
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, afk_check_handler), group=5)
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, afk_check_handler), group=5)
     # Chatbot
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+        filters.TEXT & \~filters.COMMAND & filters.ChatType.PRIVATE,
         chatbot_private_handler
     ), group=6)
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS
+        filters.TEXT & \~filters.COMMAND & filters.ChatType.GROUPS
         & filters.Regex(r'(?i)^(hey|hi|hello|bot|@)'),
         chatbot_group_handler
     ), group=7)
@@ -286,17 +286,35 @@ def _register_all_handlers(app: Application) -> None:
     from handlers.autoforward import auto_forward_message_handler
     from handlers.clean_gc import _clean_gc_service_handler, _clean_gc_command_handler
 
+    # NEW: Import the group filter poster handler
+    from filter_poster import get_or_generate_poster
+
     app.add_handler(MessageHandler(
-        admin_filter & ~filters.COMMAND, handle_admin_message
+        admin_filter & \~filters.COMMAND, handle_admin_message
     ))
+
+    # General group text handler (notes, afk, etc.)
     app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
+        filters.ChatType.GROUPS & filters.TEXT & \~filters.COMMAND,
         group_message_handler,
-    ))
+    ), group=10)
+
+    # Group caption handler
     app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & filters.CAPTION & ~filters.COMMAND,
+        filters.ChatType.GROUPS & filters.CAPTION & \~filters.COMMAND,
         group_message_handler,
-    ))
+    ), group=10)
+
+    # ←←← GROUP FILTER POSTER KEYWORD MATCH ←←←
+    # This is the handler for normal user messages in groups (your diagram)
+    # It runs after general group handler but before lower priority ones
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.GROUPS & filters.TEXT & \~filters.COMMAND,
+            get_or_generate_poster
+        ),
+        group=15
+    )
 
     # Inline query
     from handlers.inline_handler import inline_query_handler
@@ -415,9 +433,6 @@ def main() -> None:
 
         @property
         def bot(self):
-            # MUST be a @property — without it, dispatcher.bot returns the bound
-            # method (a function), and modules calling dispatcher.bot.id crash with
-            # "'function' object has no attribute 'id'" (kills admin, afk, bans etc.)
             return self._app.bot
 
     _bridge = _AppDispatcherBridge(application)
