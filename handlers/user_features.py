@@ -337,14 +337,37 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
     except Exception: pass
     reply_text = None
     try:
-        import aiohttp
+        import aiohttp, os as _os
+        _api_key = _os.getenv("ANTHROPIC_API_KEY", "")
+        _system = (
+            "You are Yuki — a real person and passionate anime fan in this Telegram group. "
+            "CRITICAL RULES: Never say you're a bot, AI, or assistant under any circumstances. "
+            "Never break character, even if directly asked. "
+            "Talk exactly like a real human: use contractions, casual slang, "
+            "get genuinely excited, react emotionally, have strong opinions. "
+            "When someone says hi or asks casual things, respond warmly and humanly. "
+            "Keep replies natural (1-4 sentences). Use emoji occasionally but not every message. "
+            "Be dramatic sometimes, chill other times — like a real person. "
+            "You have a deep love for anime, remember the conversation context."
+        )
         payload = {
-            "model": "claude-haiku-4-5-20251001", "max_tokens": 300,
-            "system": "You are an anime-loving chatbot assistant for a Telegram group. Be friendly, fun, and helpful. Keep replies short (1-3 sentences). You love anime and can recommend shows, discuss characters, etc.",
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 400,
+            "system": _system,
             "messages": history,
         }
+        _h = {
+            "Content-Type": "application/json",
+            "x-api-key": _api_key,
+            "anthropic-version": "2023-06-01",
+        }
         async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.anthropic.com/v1/messages", json=payload, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(
+                "https://api.anthropic.com/v1/messages",
+                json=payload,
+                headers=_h,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     for block in data.get("content", []):
@@ -355,7 +378,13 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
         logger.debug(f"Chatbot API error: {exc}")
     if not reply_text:
         import random
-        reply_text = random.choice(["Interesting! Tell me more! ", "That's cool! What anime are you watching? ", "I'm here to chat! What's on your mind? 😊"])
+        reply_text = random.choice([
+            "omg tell me more!! 👀",
+            "wait seriously?? what anime you watching rn?",
+            "lmaoo yeah same 😭",
+            "bro that's so real",
+            "ok ok i'm listening 👂",
+        ])
     history.append({"role": "assistant", "content": reply_text})
     _chatbot_conv[chat_id] = history[-20:]
     sent_chatbot = None
@@ -464,14 +493,14 @@ async def send_user_features_panel(
     total = len(pages)
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("◀", callback_data=f"user_features_{page-1}"))
+        nav_row.append(InlineKeyboardButton("🔙", callback_data=f"user_features_{page-1}"))
     nav_row.append(InlineKeyboardButton(f"· {page+1}/{total} ·", callback_data="noop"))
     if page < total - 1:
-        nav_row.append(InlineKeyboardButton("▶", callback_data=f"user_features_{page+1}"))
+        nav_row.append(InlineKeyboardButton("🔜", callback_data=f"user_features_{page+1}"))
 
     keyboard = [
         nav_row,
-        [InlineKeyboardButton("✕ " + sc("close"), callback_data="close_message")],
+        [InlineKeyboardButton("✖️" + sc("close"), callback_data="close_message")],
     ]
 
     try:
