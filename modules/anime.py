@@ -1537,7 +1537,10 @@ _active_filter_panels: Dict[int, Dict] = {}
 async def _send_alpha_filter_panel(
     update: Update, context: ContextTypes.DEFAULT_TYPE, letter: str
 ) -> None:
-    """Send paged anime-channel list for a single alphabet letter in GC."""
+    """
+    Send paged anime-channel list for a single alphabet letter in GC.
+    Each button is a real expirable Telegram invite link to that anime's channel.
+    """
     chat_id = update.effective_chat.id
     uid     = update.effective_user.id if update.effective_user else 0
 
@@ -1557,8 +1560,8 @@ async def _send_alpha_filter_panel(
         _active_filter_panels.pop(uid, None)
 
     try:
-        from database_dual import get_all_links
-        all_links = get_all_links(limit=500, offset=0) or []
+        from database_dual import get_all_links, get_all_anime_channel_links
+        all_links = get_all_links(limit=2000, offset=0) or []
         exp_min = 60
         try:
             from filter_poster import get_link_expiry_minutes
@@ -1569,8 +1572,10 @@ async def _send_alpha_filter_panel(
         return
 
     ll = letter.lower()
-    matched: List = []
+    # (channel_title, channel_id, link_id)
+    matched: list = []
     seen: set = set()
+
     for row in all_links:
         lid, cid, ctitle = row[0], row[1], (row[2] or "").strip()
         if not ctitle or ctitle.lower() in seen:
@@ -1578,14 +1583,66 @@ async def _send_alpha_filter_panel(
         if not ctitle.lower().startswith(ll):
             continue
         seen.add(ctitle.lower())
-        matched.append((lid, cid, ctitle))
+        matched.append((ctitle, cid, lid))
+
+    # Also pull from anime_channel_links table
+    try:
+        acl = get_all_anime_channel_links() or []
+        for arow in acl:
+            an_title = (arow[1] or "").strip()
+            if not an_title or an_title.lower() in seen:
+                continue
+            if not an_title.lower().startswith(ll):
+                continue
+            seen.add(an_title.lower())
+            matched.append((an_title, arow[2], arow[4]))
+    except Exception:
+        pass
 
     if not matched:
         return  # silent — no channels with this letter
 
-    pages      = [matched[i:i + _FILTER_PAGE_SIZE] for i in range(0, len(matched), _FILTER_PAGE_SIZE)]
-    total_p    = len(pages)
-    bot_uname  = context.bot.username or ""
+    matched.sort(key=lambda x: x[0].lower())
+
+    expire_ts = int(time.time()) + (exp_min * 60)
+
+    # Build invite links concurrently for all matched channels
+    async def _make_inv(cid, title):
+        if not cid:
+            return title, None
+        try:
+            cid_int = int(cid)
+        except (ValueError, TypeError):
+            cid_int = cid
+        try:
+            inv = await context.bot.create_chat_invite_link(
+                chat_id=cid_int,
+                expire_date=expire_ts,
+                member_limit=1,
+                creates_join_request=False,
+                name=f"A-{ll}-{int(time.time())}",
+            )
+            return title, inv.invite_link
+        except Exception:
+            return title, None
+
+    inv_results = await asyncio.gather(
+        *[_make_inv(cid, ct) for ct, cid, _ in matched],
+        return_exceptions=True,
+    )
+
+    # Filter to only items with successful invite links
+    items_with_links = []
+    for i, res in enumerate(inv_results):
+        if isinstance(res, tuple) and res[1]:
+            items_with_links.append((matched[i][0], res[1]))
+        else:
+            # Fallback: still show button without link if channel unavailable
+            items_with_links.append((matched[i][0], None))
+
+    pages = [items_with_links[i:i + _FILTER_PAGE_SIZE]
+             for i in range(0, len(items_with_links), _FILTER_PAGE_SIZE)]
+    total_p = len(pages)
 
     _active_filter_panels[uid] = {
         "chat_id": chat_id, "msg_id": None,
@@ -1594,11 +1651,14 @@ async def _send_alpha_filter_panel(
 
     def _build_kb(pi: int) -> InlineKeyboardMarkup:
         items = pages[pi]
-        btns: List[List] = []
-        brow: List = []
-        for lid, cid, ct in items:
-            deep = f"https://t.me/{bot_uname}?start={lid}"
-            brow.append(InlineKeyboardButton(ct[:30], url=deep))
+        btns: list = []
+        brow: list = []
+        for ct, inv_url in items:
+            if inv_url:
+                brow.append(InlineKeyboardButton(_sc(ct[:28]), url=inv_url))
+            else:
+                # No link available → noop button (still visible)
+                brow.append(InlineKeyboardButton(_sc(ct[:28]), callback_data="noop"))
             if len(brow) == 2:
                 btns.append(brow)
                 brow = []
@@ -1615,8 +1675,9 @@ async def _send_alpha_filter_panel(
         return InlineKeyboardMarkup(btns)
 
     text = (
-        f"<b>🎌 ᴀɴɪᴍᴇ — <code>{letter.upper()}</code></b>\n"
-        f"<i>Page 1/{total_p} • ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇs ɪɴ {_FILTER_PANEL_TTL}s</i>\n"
+        f"<b>🎌 {_sc('Anime')} — <code>{letter.upper()}</code></b>\n"
+        f"<i>{_sc(f'Page 1/{total_p}')} • {_sc(f'{len(items_with_links)} results')} • "
+        f"{_sc(f'Links expire in {exp_min}m')}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━"
     )
 
