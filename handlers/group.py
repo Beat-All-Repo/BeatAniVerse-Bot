@@ -55,11 +55,10 @@ async def group_message_handler(
     text = update.message.text or update.message.caption or ""
     lower = text.lower().strip()
 
-    # Filter poster fires in ANY group (bot just needs to be member)
-    if _FILTER_POSTER_AVAILABLE and lower and not lower.startswith("/"):
-        asyncio.create_task(_handle_anime_filter(update, context, lower))
+    # Filter poster is now handled entirely by filter_poster.py (get_or_generate_poster)
+    # which runs at group=15 with a proper DB lookup first — no duplicate needed here.
 
-    # Single-letter alpha filter panel — also fires in ALL groups
+    # Single-letter alpha filter panel — fires in ALL groups
     stripped = text.strip()
     if len(stripped) == 1 and stripped.isalpha() and not lower.startswith("/"):
         try:
