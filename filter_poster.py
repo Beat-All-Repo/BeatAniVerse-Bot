@@ -981,63 +981,20 @@ async def _deliver_poster_mode(
         except Exception:
             pass   # Cache miss or expired file_id → regenerate
 
-    # ── Placeholder ───────────────────────────────────────────────────────────
-    placeholder = None
-    try:
-        placeholder = await bot.send_message(
-            chat_id=chat_id,
-            text=_styled(f"<b>Generating poster for:</b> <code>{html.escape(title)}</code>"),
-            parse_mode="HTML",
-            reply_to_message_id=reply_to,
-        )
-    except Exception:
-        pass
-
-    # ── Generate ──────────────────────────────────────────────────────────────
+    # ── Generate (no loading placeholder — starts silently) ──────────────────
     try:
         poster_buf, caption, data = await asyncio.wait_for(
             _generate_poster_data(title, template, media_type, chat_id, bot=bot),
             timeout=30.0,
         )
     except asyncio.TimeoutError:
-        if placeholder:
-            try:
-                await placeholder.edit_text(
-                    _styled("<b>Poster generation timed out. Try again.</b>"),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
         return False
     except Exception as exc:
         logger.error(f"poster generation error: {exc}")
-        if placeholder:
-            try:
-                await placeholder.edit_text(
-                    _styled(f"<b>Error generating poster:</b> <code>{html.escape(str(exc)[:100])}</code>"),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
         return False
 
     if not (poster_buf or data):
-        if placeholder:
-            try:
-                await placeholder.edit_text(
-                    _styled(f"<b>Not found:</b> <code>{html.escape(title)}</code>"),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
         return False
-
-    # Delete placeholder
-    if placeholder:
-        try:
-            await placeholder.delete()
-        except Exception:
-            pass
 
     # ── Build join link + keyboard ────────────────────────────────────────────
     join_url   = await _make_expirable_link(bot, expiry_minutes) or PUBLIC_URL
@@ -1113,10 +1070,108 @@ async def _deliver_poster_mode(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  DB ANIME LOOKUP HELPER — used by get_or_generate_poster
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _find_anime_in_db_sync(lower_text: str):
+    """
+    Search DB for a matching anime title.
+    Returns (matched_title, channel_id, link_id, has_hindi_dub).
+    Returns (None, None, None, None) if no match found.
+    """
+    try:
+        from database_dual import get_all_links, get_all_anime_channel_links
+
+        all_links = get_all_links(limit=1000, offset=0) or []
+        seen_titles: set = set()
+        all_matched: list = []   # (channel_title, channel_id, link_id, is_hindi)
+
+        for row in all_links:
+            link_id_r    = row[0]
+            channel_id_r = row[1]
+            channel_title_r = (row[2] or "").strip()
+            if not channel_title_r or channel_title_r.lower() in seen_titles:
+                continue
+            seen_titles.add(channel_title_r.lower())
+            if len(channel_title_r) < 2:
+                continue
+
+            a_title = channel_title_r.lower()
+            is_match = False
+
+            # Exact / boundary match
+            if a_title == lower_text:
+                is_match = True
+            elif re.search(r'\b' + re.escape(a_title) + r'\b', lower_text):
+                is_match = True
+            elif len(lower_text) >= 4 and re.search(r'\b' + re.escape(lower_text) + r'\b', a_title):
+                is_match = True
+            else:
+                # Word-level: any significant word (≥4 chars) from anime title present
+                words = [w for w in a_title.split() if len(w) >= 4]
+                if words and any(re.search(r'\b' + re.escape(w) + r'\b', lower_text) for w in words):
+                    is_match = True
+
+            if is_match:
+                is_hin = ('hindi' in a_title or
+                          re.search(r'\bhin\b', a_title) is not None or
+                          a_title.endswith(' hindi'))
+                all_matched.append((channel_title_r, channel_id_r, link_id_r, is_hin))
+
+        # Fallback: anime_channel_links table
+        if not all_matched:
+            try:
+                acl = get_all_anime_channel_links() or []
+                for arow in acl:
+                    an_title = (arow[1] or "").strip()
+                    an_lower = an_title.lower()
+                    if len(an_lower) < 2:
+                        continue
+                    is_match = False
+                    if an_lower == lower_text:
+                        is_match = True
+                    elif re.search(r'\b' + re.escape(an_lower) + r'\b', lower_text):
+                        is_match = True
+                    elif len(lower_text) >= 4 and re.search(r'\b' + re.escape(lower_text) + r'\b', an_lower):
+                        is_match = True
+                    else:
+                        words = [w for w in an_lower.split() if len(w) >= 4]
+                        if words and any(re.search(r'\b' + re.escape(w) + r'\b', lower_text) for w in words):
+                            is_match = True
+                    if is_match:
+                        ch_title = (arow[3] or "").lower()
+                        is_hin = 'hindi' in ch_title or 'hindi' in an_lower
+                        all_matched.append((an_title, arow[2], arow[4], is_hin))
+            except Exception:
+                pass
+
+        if not all_matched:
+            return None, None, None, None
+
+        # Best match = first; has_hindi = any channel for this anime has Hindi
+        best = all_matched[0]
+        has_hindi = any(c[3] for c in all_matched)
+        return best[0], best[1], best[2], has_hindi
+
+    except Exception as exc:
+        logger.debug(f"_find_anime_in_db_sync error: {exc}")
+        return None, None, None, None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  PUBLIC ENTRY POINT — called from group_message_handler in bot.py
 # ═════════════════════════════════════════════════════════════════════════════
 
 async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Smart group filter handler:
+      • Silently ignores messages that don't match an anime in the DB
+      • Single chars (≤1) are handled by alpha panel in group.py
+      • On match: serves from poster cache OR generates new poster (no loading msg)
+      • Invite link created CONCURRENTLY with poster to save time
+      • "Not yet added" message if anime found in DB but no AniList data
+      • Hindi dub unavailable message if user asks for Hindi but it isn't there
+    """
     if not update.message or not update.message.text:
         return
 
@@ -1124,33 +1179,293 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     chat_id = update.effective_chat.id
     reply_to = update.message.message_id
 
-    if len(text) < 3 or len(text) > 100 or text.startswith('/'):
+    # Skip commands, single chars (alpha-panel handles those), too long/short
+    if not text or text.startswith('/') or len(text) > 100 or len(text) <= 1:
         return
 
     if not get_filter_poster_enabled(chat_id):
         return
 
+    lower = text.lower()
+    loop = asyncio.get_event_loop()
+
+    # ── Step 1: DB lookup — MUST match an anime title first ────────────────
+    matched_anime, matched_channel_id, matched_link_id, has_hindi = (
+        await loop.run_in_executor(None, _find_anime_in_db_sync, lower)
+    )
+
+    if not matched_anime:
+        return  # Not an anime name → completely silent, do nothing
+
+    bot = context.bot
     template = get_filter_template(chat_id)
-    media_type = "ANIME"
     auto_delete = get_auto_delete_seconds(chat_id)
     link_exp = get_link_expiry_minutes(chat_id)
 
-    success = await _get_or_generate_poster_internal(
-        bot=context.bot,
-        chat_id=chat_id,
-        title=text,
-        template=template,
-        media_type=media_type,
-        reply_to_message_id=reply_to,
-        auto_delete_seconds=auto_delete,
-        link_expiry_minutes=link_exp,
+    # ── Step 2: Check poster cache (file_id reuse, zero PIL cost) ──────────
+    import hashlib as _hl
+    cache_key = _hl.md5(f"{matched_anime.lower()}:{template}".encode()).hexdigest()
+
+    try:
+        from database_dual import get_filter_poster_cache, save_filter_poster_cache
+        _save_cache_fn = save_filter_poster_cache
+        cached = get_filter_poster_cache(cache_key)
+    except Exception:
+        cached = None
+        _save_cache_fn = None
+
+    # ── Step 3: Fast expirable invite link for the matched anime channel ────
+    async def _make_channel_invite() -> Optional[str]:
+        if not matched_channel_id:
+            return None
+        try:
+            cid = int(matched_channel_id)
+        except (ValueError, TypeError):
+            cid = matched_channel_id
+        expire_ts = int(time.time()) + (link_exp * 60)
+        try:
+            inv = await bot.create_chat_invite_link(
+                chat_id=cid, expire_date=expire_ts, member_limit=1,
+                creates_join_request=False, name=f"FP-{int(time.time())}",
+            )
+            return inv.invite_link
+        except Exception as exc:
+            logger.debug(f"[filter] invite link for {cid}: {exc}")
+            return None
+
+    raw_btn = (_setting("env_JOIN_BTN_TEXT", "") or
+               _setting("env_join_btn_text", "") or JOIN_BTN_TEXT_DEFAULT)
+    join_text = _styled_plain(raw_btn)
+
+    # ── Serve from cache + fresh invite link (fastest path) ───────────────
+    if cached and cached.get("file_id"):
+        try:
+            join_url = await _make_channel_invite() or PUBLIC_URL
+            delete_delay = link_exp * 60 if join_url != PUBLIC_URL else auto_delete
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(join_text, url=join_url)]])
+            sent = await bot.send_photo(
+                chat_id=chat_id,
+                photo=cached["file_id"],
+                caption=cached.get("caption", ""),
+                parse_mode="HTML",
+                reply_markup=kb,
+                reply_to_message_id=reply_to,
+            )
+            if sent and delete_delay > 0:
+                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
+            return
+        except Exception:
+            pass  # Expired file_id → fall through to regenerate
+
+    # ── Step 4: Concurrently create invite link + fetch anime data ─────────
+    async def _fetch_anime_data_async() -> Optional[Dict]:
+        try:
+            from poster_engine import _anilist_anime
+            return await loop.run_in_executor(None, _anilist_anime, matched_anime)
+        except Exception:
+            return None
+
+    # Both tasks run simultaneously → faster than sequential
+    join_url_res, data = await asyncio.gather(
+        _make_channel_invite(),
+        _fetch_anime_data_async(),
+        return_exceptions=True,
     )
 
-    if not success:
+    join_url = join_url_res if isinstance(join_url_res, str) and join_url_res else PUBLIC_URL
+    data = data if isinstance(data, dict) else None
+    delete_delay = link_exp * 60 if join_url != PUBLIC_URL else auto_delete
+
+    # ── Not available (no AniList data) ───────────────────────────────────
+    if not data:
+        not_found_text = (
+            f"<b>{_styled(html.escape(matched_anime))}</b>\n\n"
+            f"😕 <i>{_styled('ɴᴏᴛ ʏᴇᴛ ᴀᴅᴅᴇᴅ ɪɴ ᴏᴜʀ ʟɪʙʀᴀʀʏ.')}</i>\n\n"
+            f"<i>{_styled('ʏᴏᴜ ᴄᴀɴ ʀᴇǫᴜᴇsᴛ ɪᴛ ʙᴇʟᴏᴡ!')}</i>"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                _styled_plain("📩 Request"),
+                callback_data=f"request_anime:{matched_anime[:48]}",
+            )
+        ]])
         try:
-            await update.message.reply_text("❌ Couldn't generate poster right now.", quote=True)
+            sent = await bot.send_message(
+                chat_id=chat_id,
+                text=not_found_text,
+                parse_mode="HTML",
+                reply_markup=kb,
+                reply_to_message_id=reply_to,
+                disable_web_page_preview=True,
+            )
+            if sent and delete_delay > 0:
+                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
         except Exception:
             pass
+        return
+
+    # ── Hindi dub check ───────────────────────────────────────────────────
+    user_wants_hindi = any(kw in lower for kw in ('hindi', ' hin ', 'hindi dub', 'dubbed'))
+    if user_wants_hindi and not has_hindi:
+        hindi_text = (
+            f"<b>{_styled(html.escape(matched_anime))}</b>\n\n"
+            f"😔 <i>{_styled('ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ ɪɴ ʜɪɴᴅɪ ᴅᴜʙ ʀɪɢʜᴛ ɴᴏᴡ.')}</i>\n"
+            f"<i>{_styled('ʙᴜᴛ ᴡᴇ ᴡɪʟʟ ᴛʀʏ ᴏᴜʀ ʙᴇsᴛ!')}</i> 💪"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(join_text, url=join_url),
+            InlineKeyboardButton(
+                _styled_plain("📩 Request Hindi"),
+                callback_data=f"request_hindi:{matched_anime[:46]}",
+            ),
+        ]])
+        try:
+            sent = await bot.send_message(
+                chat_id=chat_id,
+                text=hindi_text,
+                parse_mode="HTML",
+                reply_markup=kb,
+                reply_to_message_id=reply_to,
+                disable_web_page_preview=True,
+            )
+            if sent and delete_delay > 0:
+                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
+        except Exception:
+            pass
+        return
+
+    # ── Step 5: Build poster (no loading placeholder) ──────────────────────
+    try:
+        from poster_engine import _build_anime_data, _make_poster, _get_settings
+        settings = _get_settings("anime")
+    except Exception as exc:
+        logger.debug(f"[filter] poster_engine import: {exc}")
+        settings = {}
+
+    poster_buf = None
+    caption = f"<b>{html.escape(matched_anime)}</b>"
+    site_url = ""
+
+    try:
+        title_b, native, st, rows, desc, cover_url, score = await loop.run_in_executor(
+            None,
+            lambda: __import__('poster_engine')._build_anime_data(data),
+        )
+        poster_buf = await loop.run_in_executor(
+            None,
+            lambda: __import__('poster_engine')._make_poster(
+                template, title_b, native, st, rows, desc,
+                cover_url, score,
+                settings.get("watermark_text"),
+                settings.get("watermark_position", "center"),
+                None, "bottom",
+            ),
+        )
+        site_url = data.get("siteUrl", "")
+        t_d = data.get("title", {}) or {}
+        eng = t_d.get("english") or t_d.get("romaji") or matched_anime
+        genres = ", ".join((data.get("genres") or [])[:3])
+        caption = f"<b>{html.escape(eng)}</b>"
+        if native:
+            caption += f"\n<i>{html.escape(native)}</i>"
+        if genres:
+            caption += f"\n\n» <b>{_styled_plain('Genre')}:</b> {_styled(html.escape(genres))}"
+        if len(caption) > 900:
+            caption = caption[:896] + "…"
+    except Exception as be:
+        logger.debug(f"[filter] poster build: {be}")
+
+    # ── Step 6: Build keyboard + send ─────────────────────────────────────
+    btn_row = [InlineKeyboardButton(join_text, url=join_url)]
+    if site_url:
+        btn_row.append(InlineKeyboardButton("📋 Info", url=site_url))
+    kb = InlineKeyboardMarkup([btn_row])
+
+    sent_msg = None
+    file_id_to_cache: Optional[str] = None
+
+    # Save to poster DB channel first to get reusable file_id
+    if POSTER_DB_CHANNEL and poster_buf:
+        try:
+            poster_buf.seek(0)
+            db_msg = await bot.send_photo(
+                chat_id=POSTER_DB_CHANNEL,
+                photo=poster_buf,
+                caption=f"FilterPoster | {matched_anime} | {template}",
+            )
+            if db_msg and db_msg.photo:
+                file_id_to_cache = db_msg.photo[-1].file_id
+        except Exception:
+            pass
+
+    if poster_buf:
+        try:
+            poster_buf.seek(0)
+            sent_msg = await bot.send_photo(
+                chat_id=chat_id,
+                photo=file_id_to_cache or poster_buf,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+                reply_to_message_id=reply_to,
+            )
+            if sent_msg and not file_id_to_cache and sent_msg.photo:
+                file_id_to_cache = sent_msg.photo[-1].file_id
+        except Exception as se:
+            logger.debug(f"[filter] send photo: {se}")
+            poster_buf = None
+
+    # Fallback: AniList cover image directly
+    if not sent_msg and data:
+        cover_direct = (
+            (data.get("coverImage") or {}).get("extraLarge") or
+            (data.get("coverImage") or {}).get("large") or ""
+        )
+        if cover_direct:
+            try:
+                sent_msg = await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=cover_direct,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=kb,
+                    reply_to_message_id=reply_to,
+                )
+                if sent_msg and sent_msg.photo:
+                    file_id_to_cache = sent_msg.photo[-1].file_id
+            except Exception:
+                pass
+
+    # Final text fallback
+    if not sent_msg:
+        try:
+            sent_msg = await bot.send_message(
+                chat_id=chat_id,
+                text=caption,
+                parse_mode="HTML",
+                reply_markup=kb,
+                reply_to_message_id=reply_to,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+    # Persist cache so next request for same anime is instant
+    if file_id_to_cache and _save_cache_fn:
+        try:
+            _save_cache_fn(
+                cache_key=cache_key,
+                anime_title=matched_anime,
+                template=template,
+                file_id=file_id_to_cache,
+                channel_id=matched_channel_id or 0,
+                caption=caption,
+            )
+        except Exception:
+            pass
+
+    if sent_msg and delete_delay > 0:
+        asyncio.create_task(_auto_delete(bot, chat_id, sent_msg.message_id, delay=delete_delay))
 
 
 async def _get_or_generate_poster_internal(
