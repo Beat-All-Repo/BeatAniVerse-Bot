@@ -3074,5 +3074,35 @@ async def button_handler(
                 pass
         return
 
+    # ── Inline Request (from filter poster "Not found" / "Hindi not available") ──
+    if data.startswith("request_anime:") or data.startswith("request_hindi:"):
+        is_hindi = data.startswith("request_hindi:")
+        anime_name = data.split(":", 1)[1].strip()
+        # Trigger same logic as /request command with the anime name pre-filled
+        try:
+            from modules.animerequest import request_cmd as _req_cmd
+            # Build fake context args
+            context.args = anime_name.split()
+            await _req_cmd(update, context)
+        except Exception:
+            # Fallback: show instructions
+            _prefix = "Hindi dub of " if is_hindi else ""
+            try:
+                await query.answer(
+                    f"Type: /request {anime_name}",
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+            try:
+                await query.message.reply_text(
+                    f"📩 <b>Send your request:</b>\n"
+                    f"<code>/request {_prefix}{anime_name}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        return
+
     # ── Unhandled fallback ─────────────────────────────────────────────────────
     logger.debug(f"Unhandled callback: {data!r} from user {uid}")
