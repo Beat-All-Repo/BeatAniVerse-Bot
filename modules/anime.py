@@ -1748,19 +1748,29 @@ async def _alpha_filter_callback(
         total_p = len(pages)
         if pi < 0 or pi >= total_p:
             return
-        bot_uname = context.bot.username or ""
-        items     = pages[pi]
+        items = pages[pi]
 
+        # pages now contain (ctitle, invite_url) tuples
         btns: List[List] = []
         brow: List = []
-        for lid, cid, ct in items:
-            deep = f"https://t.me/{bot_uname}?start={lid}"
-            brow.append(InlineKeyboardButton(ct[:30], url=deep))
+        for item in items:
+            # Support both old (lid, cid, ct) and new (ct, inv_url) formats
+            if len(item) == 3:
+                _, _, ct = item
+                btn_url = None
+            else:
+                ct, btn_url = item
+            label = _sc(ct[:28])
+            if btn_url:
+                brow.append(InlineKeyboardButton(label, url=btn_url))
+            else:
+                brow.append(InlineKeyboardButton(label, callback_data="noop"))
             if len(brow) == 2:
                 btns.append(brow)
                 brow = []
         if brow:
             btns.append(brow)
+
         nav = []
         if pi > 0:
             nav.append(InlineKeyboardButton("🔙", callback_data=f"alpha_page:{uid}:{letter}:{pi-1}"))
@@ -1770,9 +1780,11 @@ async def _alpha_filter_callback(
             btns.append(nav)
         btns.append([InlineKeyboardButton("✖️ Close", callback_data=f"alpha_close:{uid}")])
 
+        # Count total animes across all pages
+        total_animes = sum(len(p) for p in pages)
         text = (
-            f"<b>🎌 ᴀɴɪᴍᴇ — <code>{letter.upper()}</code></b>\n"
-            f"<i>Page {pi+1}/{total_p} • ᴀᴜᴛᴏ-ᴅᴇʟᴇᴛᴇs ɪɴ {_FILTER_PANEL_TTL}s</i>\n"
+            f"<b>🎌 {_sc('Anime')} — <code>{letter.upper()}</code></b>\n"
+            f"<i>{_sc(f'Page {pi+1}/{total_p}')} • {_sc(f'{total_animes} results')}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━"
         )
         try:
