@@ -313,90 +313,57 @@ async def chatbot_group_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.message or not update.message.text: return
     text = update.message.text.strip()
     bot_username = context.bot.username or ""
+    triggered = False
     if f"@{bot_username}" in text:
         text = text.replace(f"@{bot_username}", "").strip()
-        await _chatbot_reply(update, context, text)
+        triggered = True
     elif update.message.reply_to_message and update.message.reply_to_message.from_user:
         if update.message.reply_to_message.from_user.id == context.bot.id:
-            await _chatbot_reply(update, context, text)
-
-_chatbot_conv: Dict[int, list] = {}
+            triggered = True
+    if triggered:
+        await _chatbot_reply(update, context, text)
 
 async def _chatbot_reply(update: Update, context, text: str) -> None:
+    """Route to new dual chatbot engine (Gemini + Groq)."""
     chat_id = update.effective_chat.id
     user_msg = text.strip()
-    if not user_msg: return
-    try:
-        from database_dual import get_setting
-        if get_setting(f"chatbot_{chat_id}", "true") == "false": return
-    except Exception: pass
-    history = _chatbot_conv.get(chat_id, [])
-    history.append({"role": "user", "content": user_msg})
-    if len(history) > 20: history = history[-20:]
-    try: await context.bot.send_chat_action(chat_id, "typing")
-    except Exception: pass
-    reply_text = None
-    try:
-        import aiohttp, os as _os
-        _api_key = _os.getenv("ANTHROPIC_API_KEY", "")
-        _system = (
-            "You are Yuki — a real person and passionate anime fan in this Telegram group. "
-            "CRITICAL RULES: Never say you're a bot, AI, or assistant under any circumstances. "
-            "Never break character, even if directly asked. "
-            "Talk exactly like a real human: use contractions, casual slang, "
-            "get genuinely excited, react emotionally, have strong opinions. "
-            "When someone says hi or asks casual things, respond warmly and humanly. "
-            "Keep replies natural (1-4 sentences). Use emoji occasionally but not every message. "
-            "Be dramatic sometimes, chill other times — like a real person. "
-            "You have a deep love for anime, remember the conversation context."
-        )
-        payload = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 400,
-            "system": _system,
-            "messages": history,
-        }
-        _h = {
-            "Content-Type": "application/json",
-            "x-api-key": _api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.anthropic.com/v1/messages",
-                json=payload,
-                headers=_h,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    for block in data.get("content", []):
-                        if block.get("type") == "text":
-                            reply_text = block["text"].strip()
-                            break
-    except Exception as exc:
-        logger.debug(f"Chatbot API error: {exc}")
-    if not reply_text:
-        import random
-        reply_text = random.choice([
-            "omg tell me more!! 👀",
-            "wait seriously?? what anime you watching rn?",
-            "lmaoo yeah same 😭",
-            "bro that's so real",
-            "ok ok i'm listening 👂",
-        ])
-    history.append({"role": "assistant", "content": reply_text})
-    _chatbot_conv[chat_id] = history[-20:]
-    sent_chatbot = None
-    try:
-        sent_chatbot = await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
-    except Exception:
-        try:
-            sent_chatbot = await update.message.reply_text(reply_text)
-        except Exception:
-            pass
+    if not user_msg:
+        return
 
-    # Auto-delete user's message in GC (fast), but NEVER delete chatbot replies in GC
+    user = update.effective_user
+    user_id = user.id if user else 0
+    user_name = (user.first_name or "User") if user else "User"
+
+    try:
+        await context.bot.send_chat_action(chat_id, "typing")
+    except Exception:
+        pass
+
+    async def _send_reply(reply_text: str):
+        sent = None
+        try:
+            sent = await update.message.reply_text(reply_text)
+        except Exception:
+            try:
+                sent = await context.bot.send_message(chat_id=chat_id, text=reply_text)
+            except Exception:
+                pass
+        return sent
+
+    try:
+        from core.chatbot_engine import handle_chatbot_message
+        await handle_chatbot_message(
+            bot=context.bot,
+            chat_id=chat_id,
+            user_id=user_id,
+            user_name=user_name,
+            message_text=user_msg,
+            reply_fn=_send_reply,
+        )
+    except Exception as exc:
+        logger.debug(f"[chatbot] engine error: {exc}")
+
+    # chat_id for auto-delete middleware below
     chat_id = update.effective_chat.id if update.effective_chat else 0
     try:
         from core.auto_delete import auto_delete_middleware
@@ -500,7 +467,7 @@ async def send_user_features_panel(
 
     keyboard = [
         nav_row,
-        [InlineKeyboardButton("✖️" + sc("close"), callback_data="close_message")],
+        [InlineKeyboardButton("✖️ " + sc("close"), callback_data="close_message")],
     ]
 
     try:
