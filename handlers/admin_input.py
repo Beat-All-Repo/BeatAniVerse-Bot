@@ -232,6 +232,15 @@ async def handle_admin_message(
         user_states.pop(uid, None)
         return
 
+    # ── Chatbot API key input ─────────────────────────────────────────────────
+
+    if isinstance(state, str) and state.startswith("chatbot_key:"):
+        from handlers.chatbot_panel import handle_chatbot_key_input
+        handled = await handle_chatbot_key_input(update, context, state)
+        if handled:
+            user_states.pop(uid, None)
+        return
+
     # ── Backup channel ─────────────────────────────────────────────────────────
 
     if state == SET_BACKUP_CHANNEL:
