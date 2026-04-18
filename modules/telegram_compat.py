@@ -23,6 +23,10 @@ Credits: BeatAnime | @BeatAnime
 """
 
 import os, sys, re, types, logging
+import warnings
+# Suppress benign SQLAlchemy "already defined" warnings from duplicate module imports
+warnings.filterwarnings("ignore", message=".*already contains a class with the same class name.*", category=Warning)
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="sqlalchemy.*")
 logger = logging.getLogger(__name__)
 
 # ── Stub missing pip packages so modules load even without them ───────────────
