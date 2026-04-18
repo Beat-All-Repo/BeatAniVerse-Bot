@@ -392,6 +392,16 @@ async def button_handler(
         return
 
     # ── Clone management ───────────────────────────────────────────────────────
+    if data in ("clones_disable", "clones_enable"):
+        if not is_admin:
+            return
+        from database_dual import set_setting
+        set_setting("clones_disabled", "true" if data == "clones_disable" else "false")
+        status = "disabled 🚫" if data == "clones_disable" else "enabled ✅"
+        await safe_answer(query, f"Clone feature {status}")
+        await button_handler(update, context, "manage_clones")
+        return
+
     if data == "manage_clones":
         if not is_admin:
             return
@@ -3072,6 +3082,18 @@ async def button_handler(
                 await query.answer(f"Module: {data.replace('mod_', '')}", show_alert=True)
             except Exception:
                 pass
+        return
+
+    # ── Fast inline invite link (loading animation) ───────────────────────────
+    if data.startswith("inv_loading:") or data.startswith("inv_ready:"):
+        from handlers.inline_handler import handle_inv_loading_callback
+        await handle_inv_loading_callback(update, context)
+        return
+
+    # ── Chatbot API key panel ─────────────────────────────────────────────────
+    if data == "admin_chatbot_panel" or data.startswith("chatbot_gc_") or data.startswith("chatbot_add_") or data.startswith("chatbot_del_") or data.startswith("chatbot_gender_") or data == "chatbot_usage_stats":
+        from handlers.chatbot_panel import handle_chatbot_panel_callback
+        await handle_chatbot_panel_callback(update, context)
         return
 
     # ── Inline Request (from filter poster "Not found" / "Hindi not available") ──
