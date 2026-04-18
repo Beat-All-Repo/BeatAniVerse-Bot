@@ -56,8 +56,8 @@ from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
-# For Filters handling 
-from telegram import Update
+# For Filters handling
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from typing import Optional
 
@@ -1076,9 +1076,23 @@ async def _deliver_poster_mode(
 def _find_anime_in_db_sync(lower_text: str):
     """
     Search DB for a matching anime title.
+    Both the input text and DB titles are Unicode-normalized before comparison.
     Returns (matched_title, channel_id, link_id, has_hindi_dub).
     Returns (None, None, None, None) if no match found.
     """
+    # Normalize the input text
+    try:
+        from core.chatbot_engine import normalize_text as _normalize
+        lower_text = _normalize(lower_text)
+    except Exception:
+        lower_text = lower_text.lower()
+
+    def _norm(t: str) -> str:
+        try:
+            from core.chatbot_engine import normalize_text as _n
+            return _n(t)
+        except Exception:
+            return t.lower()
     try:
         from database_dual import get_all_links, get_all_anime_channel_links
 
@@ -1090,13 +1104,13 @@ def _find_anime_in_db_sync(lower_text: str):
             link_id_r    = row[0]
             channel_id_r = row[1]
             channel_title_r = (row[2] or "").strip()
-            if not channel_title_r or channel_title_r.lower() in seen_titles:
+            if not channel_title_r or _norm(channel_title_r) in seen_titles:
                 continue
-            seen_titles.add(channel_title_r.lower())
+            seen_titles.add(_norm(channel_title_r))
             if len(channel_title_r) < 2:
                 continue
 
-            a_title = channel_title_r.lower()
+            a_title = _norm(channel_title_r)
             is_match = False
 
             # Exact / boundary match
@@ -1186,7 +1200,12 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     if not get_filter_poster_enabled(chat_id):
         return
 
-    lower = text.lower()
+    # Normalize Unicode-styled text (small caps, math bold, full-width etc.)
+    try:
+        from core.chatbot_engine import normalize_text as _normalize
+        lower = _normalize(text)
+    except Exception:
+        lower = text.lower()
     loop = asyncio.get_event_loop()
 
     # ── Step 1: DB lookup — MUST match an anime title first ────────────────
