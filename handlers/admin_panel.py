@@ -85,6 +85,7 @@ def _build_panel_pages(maint: bool, clone_red: bool, clean_gc: bool):
         _btn("SETTINGS", "admin_settings"), _btn("CATEGORY", "admin_category_settings"),
         _btn("UPLOAD", "upload_menu"), _btn("FILTERS", "admin_filter_settings"),
         _btn("POSTER DB", "admin_filter_poster"), _btn("FLAGS", "admin_feature_flags"),
+        _btn("🤖 CHATBOT", "admin_chatbot_panel"),
     ]
     tools_btns = [
         _btn("AUTO FWD", "admin_autoforward"), _btn("MANGA", "admin_autoupdate"),
