@@ -196,7 +196,15 @@ class _LazyDispatcher:
     @property
     def bot(self):
         if self._real is not None:
-            return self._real.bot
+            try:
+                # PTB v21: accessing .bot before initialize() raises RuntimeError
+                # Safely test if it's ready
+                real_bot = self._real.bot
+                # Try accessing .id to confirm it's initialized
+                _ = real_bot.id
+                return real_bot
+            except (RuntimeError, AttributeError):
+                pass  # Fall through to stub
         # Return stub bot so modules don't crash with NoneType.id
         # Return stub bot with all commonly-used methods as no-ops
         _noop = lambda *a, **k: None
