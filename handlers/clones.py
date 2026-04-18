@@ -66,8 +66,33 @@ async def _run_clone_polling(token: str, uname: str) -> None:
 async def register_clone_token(
     update: Update, context: ContextTypes.DEFAULT_TYPE, token: str
 ) -> None:
-    """Validate and register a clone bot token."""
+    """Validate and register a clone bot token. Clones cannot make clones."""
     chat_id = update.effective_chat.id
+    uid = update.effective_user.id if update.effective_user else 0
+
+    # ── Check if clones feature is disabled from admin panel ──────────────────
+    try:
+        from database_dual import get_setting
+        if get_setting("clones_disabled", "false") == "true":
+            await safe_send_message(
+                context.bot, chat_id,
+                b("🚫 Clone bots are currently disabled by admin.") + "\n"
+                + bq("Enable from admin panel → Clones → Enable Clones")
+            )
+            return
+    except Exception:
+        pass
+
+    # ── Clones cannot create clones ───────────────────────────────────────────
+    from core.config import I_AM_CLONE
+    if I_AM_CLONE:
+        await safe_send_message(
+            context.bot, chat_id,
+            b("⛔ Clone bots cannot create other clones.") + "\n"
+            + bq("Only the main bot can register clone bots.")
+        )
+        return
+
     try:
         clone_bot = Bot(token=token)
         me = await clone_bot.get_me()
@@ -97,12 +122,12 @@ async def register_clone_token(
 
 async def show_clones_panel(update, context, query=None) -> None:
     """Show registered clone bots panel."""
-    from telegram import InlineKeyboardMarkup
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     from core.text_utils import b, bq, code, e, small_caps
     from core.buttons import _btn, _grid3, _back_btn, _close_btn, bold_button
     from core.helpers import safe_send_message
-    from database_dual import get_all_clone_bots
-    from core.config import ADMIN_ID, OWNER_ID
+    from database_dual import get_all_clone_bots, get_setting
+    from core.config import ADMIN_ID, OWNER_ID, I_AM_CLONE
 
     chat_id = query.message.chat_id if query else (
         update.effective_chat.id if update else 0)
@@ -110,8 +135,14 @@ async def show_clones_panel(update, context, query=None) -> None:
         try: await query.delete_message()
         except Exception: pass
 
+    clones_disabled = get_setting("clones_disabled", "false") == "true"
     clones = get_all_clone_bots(active_only=False)
+
     text = b(small_caps("🤖 clone bots")) + "\n\n"
+    if I_AM_CLONE:
+        text += bq("⚠️ " + small_caps("this is a clone bot — cannot create sub-clones.")) + "\n\n"
+    if clones_disabled:
+        text += "🔴 " + b(small_caps("clone feature is disabled")) + "\n\n"
     if clones:
         for _, token, uname, active, added in clones:
             status = "🟢" if active else "🔴"
@@ -119,12 +150,19 @@ async def show_clones_panel(update, context, query=None) -> None:
     else:
         text += bq(small_caps("no clone bots registered yet."))
 
+    toggle_label = small_caps("✅ enable clones") if clones_disabled else small_caps("🚫 disable clones")
+    toggle_cb = "clones_enable" if clones_disabled else "clones_disable"
+
     rows = [
-        [bold_button(small_caps("➕ add clone"), callback_data="clone_add"),
-         bold_button(small_caps("➖ remove"),    callback_data="clone_remove")],
-        [bold_button(small_caps("🔄 refresh commands"), callback_data="clone_refresh_cmds")],
-        [_back_btn("admin_back"), _close_btn()],
+        [InlineKeyboardButton(toggle_label, callback_data=toggle_cb)],
     ]
+    if not I_AM_CLONE:
+        rows.insert(0, [
+            bold_button(small_caps("➕ add clone"), callback_data="clone_add"),
+            bold_button(small_caps("➖ remove"),    callback_data="clone_remove"),
+        ])
+        rows.append([bold_button(small_caps("🔄 refresh commands"), callback_data="clone_refresh_cmds")])
+    rows.append([_back_btn("admin_back"), _close_btn()])
     await safe_send_message(context.bot, chat_id, text,
                             reply_markup=InlineKeyboardMarkup(rows))
 
