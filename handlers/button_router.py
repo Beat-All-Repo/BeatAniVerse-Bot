@@ -60,6 +60,48 @@ except ImportError:
     def _get_panel_db_images(): return []
 
 
+
+async def _panel_edit(query, text: str, reply_markup=None) -> None:
+    """
+    Smart edit for admin panel callbacks.
+    Photo panels can't be edited as text — deletes and resends instead.
+    """
+    try:
+        await query.edit_message_text(
+            text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+        )
+        return
+    except Exception as e1:
+        err = str(e1).lower()
+        if "message is not modified" in err:
+            return
+        # Photo message — try caption edit
+        if any(k in err for k in ("no text", "can't be edited", "caption")):
+            try:
+                await query.edit_message_caption(
+                    caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+                )
+                return
+            except Exception:
+                pass
+    # Last resort: delete + resend
+    chat_id = query.message.chat_id if query.message else 0
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+    if chat_id:
+        try:
+            bot = context.bot if hasattr(context, 'bot') else query.get_bot()
+            await bot.send_message(
+                chat_id=chat_id, text=text,
+                parse_mode=ParseMode.HTML, reply_markup=reply_markup,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+
 @force_sub_required
 async def button_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE, _data_override: str = None
@@ -79,6 +121,46 @@ async def button_handler(
             pass
 
     data = _data_override if _data_override is not None else (query.data or "")
+
+    # Helper: delete current message and send fresh panel
+    async def _del_and_send(text: str, reply_markup=None, photo=None) -> None:
+        """Delete the triggering panel message, then send fresh content."""
+        try:
+            if query and query.message:
+                await query.message.delete()
+        except Exception:
+            pass
+        if photo:
+            try:
+                await context.bot.send_photo(
+                    chat_id=chat_id, photo=photo, caption=text,
+                    parse_mode=ParseMode.HTML, reply_markup=reply_markup,
+                )
+                return
+            except Exception:
+                pass
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id, text=text, parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup, disable_web_page_preview=True,
+            )
+        except Exception:
+            pass
+
+    # Smart edit: try text edit → caption edit → delete+resend
+    async def _smart_edit(text: str, reply_markup=None) -> None:
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            return
+        except Exception as _e:
+            if "not modified" in str(_e).lower():
+                return
+        try:
+            await query.edit_message_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            return
+        except Exception:
+            pass
+        await _del_and_send(text, reply_markup)
     uid = query.from_user.id if query.from_user else 0
     chat_id = query.message.chat_id if query.message else uid
     is_admin = uid in (ADMIN_ID, OWNER_ID)
@@ -722,15 +804,24 @@ async def button_handler(
             from filter_poster import (
                 build_filter_poster_settings_keyboard, get_filter_poster_settings_text
             )
+            _fp_text = get_filter_poster_settings_text(chat_id)
+            _fp_kb   = build_filter_poster_settings_keyboard(chat_id)
             try:
-                await query.delete_message()
+                await query.edit_message_text(_fp_text, parse_mode=ParseMode.HTML, reply_markup=_fp_kb)
             except Exception:
-                pass
-            await safe_send_message(
-                context.bot, chat_id, get_filter_poster_settings_text(chat_id),
-                reply_markup=build_filter_poster_settings_keyboard(chat_id),
-            )
-        except Exception:
+                try:
+                    await query.edit_message_caption(caption=_fp_text, parse_mode=ParseMode.HTML, reply_markup=_fp_kb)
+                except Exception:
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=_fp_text, parse_mode=ParseMode.HTML,
+                        reply_markup=_fp_kb, disable_web_page_preview=True,
+                    )
+        except Exception as _fpe:
+            logger.debug(f"admin_filter_poster: {_fpe}")
             await safe_answer(query, "Filter poster module unavailable.")
         return
 
@@ -747,10 +838,9 @@ async def button_handler(
                 build_filter_poster_settings_keyboard, get_filter_poster_settings_text,
             )
             _set_filter_poster_enabled(fp_cid, not _get_filter_poster_enabled(fp_cid))
-            await safe_edit_text(
-                query, get_filter_poster_settings_text(fp_cid),
-                reply_markup=build_filter_poster_settings_keyboard(fp_cid),
-            )
+            _t = get_filter_poster_settings_text(fp_cid)
+            _k = build_filter_poster_settings_keyboard(fp_cid)
+            await _smart_edit(_t, _k)
         except Exception:
             pass
         return
@@ -779,11 +869,9 @@ async def button_handler(
                 if _FILTER_POSTER_AVAILABLE:
                     _set_default_poster_template(fp_chat_id, fp_template)
                     await safe_answer(query, f"✅ Template set to {fp_template}")
-                    await safe_edit_text(
-                        query,
-                        get_filter_poster_settings_text(fp_chat_id),
-                        reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
-                    )
+                    _t2 = get_filter_poster_settings_text(fp_chat_id)
+                    _k2 = build_filter_poster_settings_keyboard(fp_chat_id)
+                    await _smart_edit(_t2, _k2)
             except Exception:
                 pass
         return
@@ -803,11 +891,9 @@ async def button_handler(
                 set_filter_mode(fp_chat_id, new_mode)
                 label = "TEXT (link only)" if new_mode == "text" else "POSTER (full card)"
                 await safe_answer(query, f"✔️ Mode: {label}")
-                await safe_edit_text(
-                    query,
-                    get_filter_poster_settings_text(fp_chat_id),
-                    reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
-                )
+                _t3 = get_filter_poster_settings_text(fp_chat_id)
+                _k3 = build_filter_poster_settings_keyboard(fp_chat_id)
+                await _smart_edit(_t3, _k3)
             except Exception:
                 pass
         return
@@ -829,11 +915,9 @@ async def button_handler(
                 set_wm_layer(fp_chat_id, layer, ldata)
                 state_str = "enabled" if ldata["enabled"] else "disabled"
                 await safe_answer(query, f"✔️ Layer {layer.upper()} {state_str}")
-                await safe_edit_text(
-                    query,
-                    get_filter_poster_settings_text(fp_chat_id),
-                    reply_markup=build_filter_poster_settings_keyboard(fp_chat_id),
-                )
+                _t3 = get_filter_poster_settings_text(fp_chat_id)
+                _k3 = build_filter_poster_settings_keyboard(fp_chat_id)
+                await _smart_edit(_t3, _k3)
             except Exception:
                 pass
         return
@@ -3082,6 +3166,23 @@ async def button_handler(
                 await query.answer(f"Module: {data.replace('mod_', '')}", show_alert=True)
             except Exception:
                 pass
+        return
+
+    if data == "inline_anim_toggle":
+        from handlers.inline_handler import get_animation_enabled, set_animation_enabled
+        cur = get_animation_enabled()
+        set_animation_enabled(not cur)
+        status = "✅ ON" if not cur else "🔕 OFF"
+        await safe_answer(query, f"Loading animation: {status}")
+        # Refresh the filter poster panel so the button label updates
+        try:
+            from filter_poster import build_filter_poster_settings_keyboard, get_filter_poster_settings_text
+            await _smart_edit(
+                get_filter_poster_settings_text(chat_id),
+                build_filter_poster_settings_keyboard(chat_id),
+            )
+        except Exception:
+            pass
         return
 
     # ── Fast inline invite link (loading animation) ───────────────────────────
