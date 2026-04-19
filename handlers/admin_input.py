@@ -267,6 +267,7 @@ async def handle_admin_message(
         return
 
 
+    if isinstance(state, str) and (state.startswith("chatbot_key:") or state.startswith("chatbot_new_set:")):
         from handlers.chatbot_panel import handle_chatbot_key_input
         handled = await handle_chatbot_key_input(update, context, state)
         if handled:
