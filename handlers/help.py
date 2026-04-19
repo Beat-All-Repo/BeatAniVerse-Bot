@@ -50,13 +50,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if PUBLIC_ANIME_CHANNEL_URL and not any(PUBLIC_ANIME_CHANNEL_URL == r[0].url for r in keyboard if r):
         keyboard.append([InlineKeyboardButton("ᴀɴɪᴍᴇ ᴄʜᴀɴɴᴇʟ", url=PUBLIC_ANIME_CHANNEL_URL)])
     if ADMIN_CONTACT_USERNAME:
-        keyboard.append([InlineKeyboardButton("💬 ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ", url=f"https://t.me/{ADMIN_CONTACT_USERNAME}")])
+        keyboard.append([InlineKeyboardButton(" ᴄᴏɴᴛᴀᴄᴛ ᴀᴅᴍɪɴ", url=f"https://t.me/{ADMIN_CONTACT_USERNAME}")])
     keyboard.append([bold_button("CLOSE", callback_data="close_message")])
     markup = InlineKeyboardMarkup(keyboard)
 
     if not is_admin:
         user_text = HELP_TEXT_CUSTOM if HELP_TEXT_CUSTOM else (
-            b(f"ℹ️ {e(BOT_NAME)}") + "\n\n"
+            b(f" {e(BOT_NAME)}") + "\n\n"
             + bq(
                 b(" Your gateway to Anime, Manga & Movies!\n\n")
                 + "Use the buttons below to join our channels."
@@ -130,34 +130,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await safe_reply(update, text, reply_markup=markup)
 
 
-@force_sub_required
-async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    t0 = time.monotonic()
-    try:
-        msg = await safe_reply(update, b("🏓 Pinging…"))
-        if msg:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            await msg.edit_text(
-                b("🏓 Pong!") + "\n\n"
-                f"<b>Response Time:</b> {code(f'{elapsed_ms:.0f}ms')}\n"
-                f"<b>Status:</b> {code('Online ✅')}",
-                parse_mode=ParseMode.HTML,
-            )
-    except Exception:
-        pass
 
 
-"""@force_sub_required
-async def alive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        b("✅ Bot is Alive!") + "\n\n"
-        f"<b>⏱ Uptime:</b> {code(get_uptime())}\n"
-        f"<b>🤖 Username:</b> @{e(BOT_USERNAME)}\n"
-        f"<b>🏷 Mode:</b> {code('Clone Bot' if I_AM_CLONE else 'Main Bot')}"
-    )
-    await safe_reply(update, text)
 
-"""
 @force_sub_required
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
@@ -327,8 +302,7 @@ async def cmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     public = sec("🌐 General — Everyone", [
         ("start", "Main menu"), ("help", "Help & channel links"),
-        ("cmd", "Show all commands"), ("alive", "Check if bot is online"),
-        ("ping", "Bot response speed"), ("id", "Your Telegram user / chat ID"),
+        ("cmd", "Show all commands"), ("id", "Your Telegram user / chat ID"),
         ("info", "User info lookup"), ("my_plan", "Your daily poster usage limit"),
         ("plans", "View all available poster plans"),
         ("rules", "View group rules"), ("report", "Report a message to admins (reply)"),
