@@ -470,6 +470,7 @@ async def send_user_features_panel(
         [InlineKeyboardButton("✖️ " + sc("close"), callback_data="close_message")],
     ]
 
+
     try:
         from core.panel_image import get_panel_pic_async
         img = await get_panel_pic_async("features")
