@@ -305,12 +305,12 @@ def _register_all_handlers(app: Application) -> None:
         group_message_handler,
     ), group=10)
 
-    # ←←← GROUP FILTER POSTER KEYWORD MATCH ←←←
-    # This is the handler for normal user messages in groups (your diagram)
-    # It runs after general group handler but before lower priority ones
+    # ←←← FILTER POSTER — works in groups AND DMs ←←←
+    # Group=15 so it runs after notes/afk (group=10) but before lower priority
     app.add_handler(
         MessageHandler(
-            filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
+            (filters.ChatType.GROUPS | filters.ChatType.PRIVATE)
+            & filters.TEXT & ~filters.COMMAND,
             get_or_generate_poster
         ),
         group=15
