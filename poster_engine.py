@@ -1418,16 +1418,20 @@ async def _poster_cmd(
             limit = POSTER_TASK_LIMITS.get(rank, 20)
             used = get_poster_usage_today(uid)
             if used >= limit:
-                await update.effective_message.reply_text(
-                    f"<b>⚠️ Daily Limit Reached</b>\n\n"
-                    f"You have used <b>{used}/{limit}</b> posters today.\n"
-                    f"Your plan: <b>{rank.title()}</b>\n\n"
-                    f"<i>Use /my_plan to check your plan or /plans to upgrade.</i>",
-                    parse_mode="HTML",
-                )
-                return
-            # Count this usage
-            check_and_update_poster_usage(uid, limit)
+                # Warn but do NOT block — users can still make posters
+                try:
+                    await update.effective_message.reply_text(
+                        f"<b>📊 Daily limit ({limit}) reached</b> — but you can still continue!\n"
+                        f"Used: <b>{used}</b> today. Contact admin for a premium plan for more.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+            # Count this usage regardless
+            try:
+                check_and_update_poster_usage(uid, limit)
+            except Exception:
+                pass
         except Exception:
             pass  # If DB fails, allow the request
 
@@ -1575,65 +1579,65 @@ async def _poster_cmd(
                 callback_data=f"pe_send_main:{template}:{media_type}"
             )])
 
-        if poster_buf:
-            sent_poster = await context.bot.send_photo(
-                chat_id=chat_id,
-                photo=poster_buf,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(btns),
-            )
-            # Store for send-to-main later
-            if sent_poster:
-                import json as _json
-                try:
-                    from database_dual import set_setting as _ss
-                    _ss(f"last_poster_{uid}", _json.dumps({
-                        "chat_id": chat_id,
-                        "msg_id":  sent_poster.message_id,
-                        "caption": caption,
-                    }))
-                except Exception:
-                    pass
-        else:
-            # Fallback 1: send cover image URL directly (Telegram downloads server-side)
-            sent_cover = None
-            if cover_url:
-                try:
-                    sent_cover = await context.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=cover_url,
-                        caption=caption,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=InlineKeyboardMarkup(btns),
-                    )
-                    if sent_cover:
-                        import json as _json
-                        try:
-                            from database_dual import set_setting as _ss
-                            _ss(f"last_poster_{uid}", _json.dumps({
-                                "chat_id": chat_id,
-                                "msg_id":  sent_cover.message_id,
-                                "caption": caption,
-                            }))
-                        except Exception:
-                            pass
-                except Exception:
-                    sent_cover = None
-            # Fallback 2: text with link preview
-            if not sent_cover:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=caption + f"\n\n<a href='{html.escape(cover_url)}'>🖼 Cover</a>" if cover_url else caption,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(btns),
-                    disable_web_page_preview=not cover_url,
-                )
+        # Delete status then send poster (edit status→photo not supported by Telegram)
+        import json as _json
+        _kb = InlineKeyboardMarkup(btns)
+        sent_final = None
 
         try:
             await status.delete()
         except Exception:
             pass
+
+        if poster_buf:
+            try:
+                sent_final = await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=poster_buf,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_kb,
+                )
+            except Exception as _se:
+                logger.debug(f"poster send_photo: {_se}")
+                poster_buf = None  # fall through to cover
+
+        if not sent_final and cover_url:
+            try:
+                sent_final = await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=cover_url,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_kb,
+                )
+            except Exception:
+                pass
+
+        if not sent_final:
+            link_preview = f"\n\n<a href='{html.escape(cover_url or '')}'>🖼 Cover</a>" if cover_url else ""
+            try:
+                sent_final = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption + link_preview,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_kb,
+                    disable_web_page_preview=not cover_url,
+                )
+            except Exception:
+                pass
+
+        if sent_final:
+            try:
+                from database_dual import set_setting as _ss
+                _ss(f"last_poster_{uid}", _json.dumps({
+                    "chat_id": chat_id,
+                    "msg_id":  sent_final.message_id,
+                    "caption": caption,
+                }))
+            except Exception:
+                pass
+
 
     except Exception as exc:
         logger.error(f"Poster error ({template}): {exc}\n{traceback.format_exc()}")
@@ -1677,13 +1681,23 @@ async def cmd_my_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         used = get_poster_usage_today(uid)
         remaining = max(0, limit - used)
 
-        if not is_prem:
+        # Check if admin/owner
+        from core.config import ADMIN_ID as _AID, OWNER_ID as _OID
+        if uid in (_AID, _OID):
+            text = (
+                f"<b>👑 Your Plan: Admin</b>\n\n"
+                f"• Daily Limit: <b>Unlimited ∞</b>\n"
+                f"• Used Today: <b>{used}</b>\n"
+                f"• Status: <b>✅ All features unlocked</b>"
+            )
+        elif not is_prem:
             text = (
                 f"<b>📋 Your Plan: Free</b>\n\n"
-                f"• Daily Limit: <b>{limit}</b> posters\n"
+                f"• Daily Limit: <b>{limit}</b> posters/day\n"
                 f"• Used Today: <b>{used}</b>\n"
                 f"• Remaining: <b>{remaining}</b>\n\n"
-                f"<i>Contact admin to upgrade!</i>"
+                f"<i>You can still use the bot after the daily limit.\n"
+                f"Contact admin to get a premium plan for more!</i>"
             )
         else:
             doc = get_poster_premium(uid)
