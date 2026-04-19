@@ -78,7 +78,7 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("id",      id_command))
     app.add_handler(CommandHandler("info",    info_command))
     app.add_handler(CommandHandler("ping",    ping_command))
-    app.add_handler(CommandHandler("alive",   alive_command))
+    
 
     # ── Media content commands ────────────────────────────────────────────────
     from handlers.media_cmds import (
