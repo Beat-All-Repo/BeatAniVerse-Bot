@@ -61,7 +61,7 @@ def _register_all_handlers(app: Application) -> None:
     # Import handlers
     from handlers.start import start, delete_update_message
     from handlers.help import (
-        help_command, ping_command,
+        help_command, 
         id_command, info_command, cmd_command,
     )
     from handlers.admin_panel import send_admin_menu
@@ -77,7 +77,7 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("commands",cmd_command))
     app.add_handler(CommandHandler("id",      id_command))
     app.add_handler(CommandHandler("info",    info_command))
-    app.add_handler(CommandHandler("ping",    ping_command))
+    
     
 
     # ── Media content commands ────────────────────────────────────────────────
