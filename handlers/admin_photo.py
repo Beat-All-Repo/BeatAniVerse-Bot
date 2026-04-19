@@ -170,6 +170,31 @@ async def handle_admin_photo(
             )
             return
 
+        # AWAITING_LOADER_STICKER — admin sent sticker to set as transition loader
+        if state == "AWAITING_LOADER_STICKER":
+            user_states.pop(uid, None)
+            if file_type in ("sticker", "animation", "image"):
+                from database_dual import set_setting as _ss
+                _ss("loading_sticker_id", file_id)
+                _ss("loading_anim_enabled", "true")
+                _ss("env_TRANSITION_STICKER", file_id)
+                try:
+                    await context.bot.send_sticker(update.effective_chat.id, file_id)
+                except Exception:
+                    pass
+                await msg.reply_text(
+                    b("✅ Transition sticker/animation saved!") + "\n"
+                    + bq(small_caps("it will now show as loading animation when posters generate.")),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton(small_caps("⚙️ loader settings"), callback_data="admin_settings"),
+                        _close_btn()
+                    ]]),
+                )
+            else:
+                await msg.reply_text(b("❌ Please send a sticker or GIF animation."), parse_mode=ParseMode.HTML)
+            return
+
         # AWAITING_WM_LAYER_<layer>_<chat_id>  (filter poster visual watermark)
         if isinstance(state, str) and state.startswith("AWAITING_WM_LAYER_"):
             parts_s = state.split("_")
