@@ -289,8 +289,108 @@ async def button_handler(
             await query.delete_message()
         except Exception:
             pass
-        from handlers.misc_cmds import logs_command
-        await logs_command(update, context)
+        from handlers.misc_cmds import _send_logs_panel
+        await _send_logs_panel(context.bot, chat_id)
+        return
+
+    if data in ("admin_logs_refresh", "admin_logs_200", "admin_logs_errors",
+                "admin_logs_warnings", "admin_logs_download", "admin_logs_clear"):
+        if not is_admin:
+            return
+        from handlers.misc_cmds import _send_logs_panel
+        import os, glob
+
+        if data == "admin_logs_clear":
+            try:
+                for pattern in ["logs/bot.log", "logs/*.log", "bot.log"]:
+                    for f in glob.glob(pattern):
+                        open(f, "w").close()
+                await safe_answer(query, "✅ Logs cleared")
+            except Exception as exc:
+                await safe_answer(query, f"❌ {exc}", show_alert=True)
+            await _send_logs_panel(context.bot, chat_id, query=query)
+            return
+
+        if data == "admin_logs_download":
+            try:
+                log_text = ""
+                for pattern in ["logs/bot.log", "logs/*.log", "bot.log"]:
+                    files = glob.glob(pattern)
+                    if files:
+                        log_file = max(files, key=os.path.getmtime)
+                        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                            log_text = f.read()
+                        break
+                if log_text:
+                    from io import BytesIO
+                    doc = BytesIO(log_text.encode())
+                    doc.name = "bot_logs.txt"
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await context.bot.send_document(
+                        chat_id=chat_id, document=doc,
+                        caption="<b>📋 Full Bot Logs</b>", parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔙 Back", callback_data="admin_logs_refresh"),
+                            InlineKeyboardButton("✖ Close", callback_data="close_message"),
+                        ]]),
+                    )
+            except Exception as exc:
+                await safe_answer(query, f"❌ {exc}", show_alert=True)
+            return
+
+        if data == "admin_logs_errors":
+            # Show only error lines
+            try:
+                log_text = ""
+                for pattern in ["logs/bot.log", "logs/*.log", "bot.log"]:
+                    files = glob.glob(pattern)
+                    if files:
+                        log_file = max(files, key=os.path.getmtime)
+                        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                            lines = [l for l in f if "ERROR" in l or "error" in l.lower()]
+                        log_text = "".join(lines[-50:])
+                        break
+                if not log_text:
+                    log_text = "No errors found! ✅"
+                from core.text_utils import e
+                text = f"<b>🔴 Error Lines Only</b>\n\n<pre>{e(log_text[-3800:])}</pre>"
+                await _smart_edit(text, InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 All Logs", callback_data="admin_logs_refresh"),
+                    InlineKeyboardButton("✖ Close", callback_data="close_message"),
+                ]]))
+            except Exception as exc:
+                await safe_answer(query, f"❌ {exc}", show_alert=True)
+            return
+
+        if data == "admin_logs_warnings":
+            try:
+                log_text = ""
+                for pattern in ["logs/bot.log", "logs/*.log", "bot.log"]:
+                    files = glob.glob(pattern)
+                    if files:
+                        log_file = max(files, key=os.path.getmtime)
+                        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                            lines = [l for l in f if "WARNING" in l or "WARN" in l]
+                        log_text = "".join(lines[-50:])
+                        break
+                if not log_text:
+                    log_text = "No warnings found! ✅"
+                from core.text_utils import e
+                text = f"<b>🟡 Warning Lines Only</b>\n\n<pre>{e(log_text[-3800:])}</pre>"
+                await _smart_edit(text, InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 All Logs", callback_data="admin_logs_refresh"),
+                    InlineKeyboardButton("✖ Close", callback_data="close_message"),
+                ]]))
+            except Exception as exc:
+                await safe_answer(query, f"❌ {exc}", show_alert=True)
+            return
+
+        # admin_logs_refresh or admin_logs_200
+        n = 200 if data == "admin_logs_200" else 80
+        await _send_logs_panel(context.bot, chat_id, lines=n, query=query)
         return
 
     # ── Restart ────────────────────────────────────────────────────────────────
@@ -2304,22 +2404,12 @@ async def button_handler(
     if data.startswith("pe_send_main:"):
         if not is_admin:
             return
-        try:
-            main_ch_raw = None
-            from database_dual import get_setting
-            main_ch_raw = get_setting("main_channel_id", "")
-            if main_ch_raw:
-                main_ch_id = int(main_ch_raw)
-            else:
-                await safe_answer(query, small_caps("⚠️ no main channel set — go to settings → set main channel"), show_alert=True)
-                return
-        except Exception:
-            await safe_answer(query, small_caps("⚠️ invalid main channel id"), show_alert=True)
-            return
 
         import json as _json
+        from database_dual import get_setting
+
+        # Get stored poster data
         try:
-            from database_dual import get_setting
             raw = get_setting(f"last_poster_{uid}", "")
             pdata = _json.loads(raw) if raw else {}
         except Exception:
@@ -2330,21 +2420,86 @@ async def button_handler(
         caption  = pdata.get("caption", "")
 
         if not src_chat or not src_msg:
-            await safe_answer(query, small_caps("❌ poster not found — regenerate and try again"), show_alert=True)
+            await safe_answer(query, "❌ Poster not found — regenerate and try again", show_alert=True)
             return
 
+        # Check if default main channel is configured
+        main_ch_raw = get_setting("main_channel_id", "") or ""
+        main_ch_title = get_setting("main_channel_title", "") or "Default Channel"
+
+        # Build keyboard: "Send to default" (if set) + "Enter ID/username" + cancel
+        kb_rows = []
+        if main_ch_raw.strip():
+            kb_rows.append([InlineKeyboardButton(
+                f"📢 Send to: {main_ch_title}",
+                callback_data=f"pe_do_send:{src_chat}:{src_msg}:{main_ch_raw.strip()}"
+            )])
+        kb_rows.append([InlineKeyboardButton(
+            "✏️ Enter Channel ID/Username",
+            callback_data=f"pe_send_ask_id:{src_chat}:{src_msg}"
+        )])
+        kb_rows.append([InlineKeyboardButton("✖ Cancel", callback_data="close_message")])
+
+        await _smart_edit(
+            b("📤 Send Poster to Channel") + "\n\n"
+            + bq(
+                ("Default: <code>" + main_ch_raw + "</code>\n\n" if main_ch_raw else "")
+                + small_caps("choose where to send the poster:")
+            ),
+            InlineKeyboardMarkup(kb_rows),
+        )
+        return
+
+    if data.startswith("pe_send_ask_id:"):
+        if not is_admin:
+            return
+        parts = data.split(":", 2)
+        src_chat = parts[1] if len(parts) > 1 else ""
+        src_msg  = parts[2] if len(parts) > 2 else ""
+        user_states[uid] = f"AWAITING_SEND_TO_CHANNEL:{src_chat}:{src_msg}"
+        await _smart_edit(
+            b("✏️ Send Poster to Channel") + "\n\n"
+            + bq(small_caps("send the channel @username or numeric ID:\nexample: @BeatAnime or -1001234567890")),
+            InlineKeyboardMarkup([[InlineKeyboardButton("✖ Cancel", callback_data="close_message")]]),
+        )
+        return
+
+    if data.startswith("pe_do_send:"):
+        if not is_admin:
+            return
+        parts = data.split(":", 3)
+        src_chat_s = parts[1] if len(parts) > 1 else ""
+        src_msg_s  = parts[2] if len(parts) > 2 else ""
+        dest_ch    = parts[3] if len(parts) > 3 else ""
         try:
+            src_chat_i = int(src_chat_s)
+            src_msg_i  = int(src_msg_s)
+            try:
+                dest_ch_i = int(dest_ch)
+            except ValueError:
+                dest_ch_i = dest_ch  # username
+            import json as _json
+            from database_dual import get_setting
+            raw  = get_setting(f"last_poster_{uid}", "")
+            pdat = _json.loads(raw) if raw else {}
+            cap  = pdat.get("caption", "")
             await context.bot.copy_message(
-                chat_id=main_ch_id,
-                from_chat_id=src_chat,
-                message_id=src_msg,
-                caption=caption,
+                chat_id=dest_ch_i,
+                from_chat_id=src_chat_i,
+                message_id=src_msg_i,
+                caption=cap,
                 parse_mode="HTML",
             )
-            await safe_answer(query, small_caps("✅ sent to main channel!"))
+            await safe_answer(query, "✅ Sent to channel!")
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
         except Exception as exc:
-            await safe_answer(query, small_caps(f"❌ failed: {str(exc)[:80]}"), show_alert=True)
+            await safe_answer(query, f"❌ Failed: {str(exc)[:80]}", show_alert=True)
         return
+
+
 
     if data.startswith("env_edit_"):
         if not is_admin:
@@ -2559,6 +2714,83 @@ async def button_handler(
         return
 
     # ── User features panel ────────────────────────────────────────────────────
+    # ── User features help cards (4×2 grid → tap = feature card) ─────────────
+    if data.startswith("uf_help:"):
+        feature = data[len("uf_help:"):]
+        HELP_CARDS = {
+            "anime": (
+                "🎌 <b>Anime Poster</b>\n\n"
+                "<code>/anime Demon Slayer</code> — generate anime poster + info\n"
+                "<code>/airing Jujutsu Kaisen</code> — next episode countdown\n"
+                "<code>/character Tanjiro</code> — character details\n\n"
+                "<i>Searches AniList for accurate info.</i>"
+            ),
+            "manga": (
+                "📚 <b>Manga Poster</b>\n\n"
+                "<code>/manga One Piece</code> — generate manga poster\n"
+                "<code>/manga Berserk</code> — poster + info from AniList\n\n"
+                "<i>Also searches MangaDex for cover art.</i>"
+            ),
+            "movie": (
+                "🎬 <b>Movie Poster</b>\n\n"
+                "<code>/movie Spirited Away</code> — TMDB movie poster\n"
+                "<code>/tvshow Attack on Titan</code> — TV show poster\n"
+                "<code>/search Naruto</code> — search all sources at once\n\n"
+                "<i>Requires TMDB API to be configured.</i>"
+            ),
+            "character": (
+                "👤 <b>Character Info</b>\n\n"
+                "<code>/character Goku</code> — character details + image\n"
+                "<code>/character Mikasa Ackerman</code> — full info\n\n"
+                "<i>Data from AniList character database.</i>"
+            ),
+            "reactions": (
+                "🤗 <b>Reaction GIFs</b>\n\n"
+                "<code>/hug @user</code> — send a hug GIF\n"
+                "<code>/slap @user</code> — slap someone\n"
+                "<code>/kiss @user</code> — send a kiss\n"
+                "<code>/pat @user</code> — pat someone\n"
+                "<code>/punch @user</code> — punch!\n"
+                "<code>/couple</code> — couple of the day GIF\n\n"
+                "<i>Reply to a message or mention @user.</i>"
+            ),
+            "chatbot": (
+                "💬 <b>AI Chatbot</b>\n\n"
+                "Just <b>mention the bot</b> or <b>reply</b> to its message in a group.\n"
+                "In DM — just type anything!\n\n"
+                "<i>Powered by Gemini + Groq. Remembers conversation context.</i>"
+            ),
+            "notes": (
+                "📝 <b>Notes System</b>\n\n"
+                "<code>/save notename content</code> — save a note\n"
+                "<code>/get notename</code> — retrieve a note\n"
+                "<code>/notes</code> — list all saved notes\n"
+                "<code>#notename</code> — trigger note by hashtag\n\n"
+                "<i>Notes are saved per group.</i>"
+            ),
+            "group": (
+                "⚖️ <b>Group Management</b>\n\n"
+                "<code>/warn @user reason</code> — warn a user\n"
+                "<code>/warns @user</code> — check warnings\n"
+                "<code>/unwarn @user</code> — remove a warning\n"
+                "<code>/rules</code> — show group rules\n"
+                "<code>/afk reason</code> — set AFK status\n\n"
+                "<i>Most mod commands require admin rights.</i>"
+            ),
+        }
+        card_text = HELP_CARDS.get(feature, "<b>Feature not found.</b>")
+        back_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔙 Back", callback_data="user_features_panel"),
+            InlineKeyboardButton("✖ Close", callback_data="close_message"),
+        ]])
+        await _smart_edit(card_text, back_kb)
+        return
+
+    if data == "user_features_panel":
+        from handlers.user_features import send_user_features_panel
+        await send_user_features_panel(update, context, query=query, chat_id=chat_id)
+        return
+
     if data.startswith("user_features_"):
         try:
             page = int(data.split("_")[-1])
