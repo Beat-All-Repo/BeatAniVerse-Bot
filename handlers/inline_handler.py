@@ -201,17 +201,33 @@ async def inline_query_handler(
         logger.debug(f"[inline] answer: {exc}")
 
 
+def get_animation_enabled() -> bool:
+    """Check if loading animation is enabled (default: True)."""
+    try:
+        from database_dual import get_setting
+        return get_setting("inline_anim_enabled", "true") != "false"
+    except Exception:
+        return True
+
+
+def set_animation_enabled(enabled: bool) -> None:
+    try:
+        from database_dual import set_setting
+        set_setting("inline_anim_enabled", "true" if enabled else "false")
+    except Exception:
+        pass
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-#  CALLBACK: Fast invite link generation with loading animation
-#  Registered in button_router.py → handles inv_loading: prefix
+#  CALLBACK: Fast invite link with optional loading animation + original text
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def handle_inv_loading_callback(update, context):
     """
-    Called when user taps the inline result button.
-    1. Immediately edits message to show loading animation (. .. ...)
-    2. Simultaneously creates the invite link
-    3. Updates message with the real link button the moment it's ready
+    Called when user taps inline result button.
+    • If animation ON: shows ⏳ → ⏳ . → ⏳ .. → ⏳ ... while link generates
+    • Link creation runs simultaneously so no speed penalty
+    • Final button shows Join Now with real expirable link
     """
     query = update.callback_query
     if not query:
@@ -222,18 +238,28 @@ async def handle_inv_loading_callback(update, context):
         pass
 
     cb = query.data or ""
-    # Format: inv_loading:{channel_id}:{link_id}
+
+    # ── Animation ON/OFF toggle (from admin panel) ───────────────────────────
+    if cb == "inline_anim_toggle":
+        cur = get_animation_enabled()
+        set_animation_enabled(not cur)
+        status = "✅ ON" if not cur else "🔕 OFF"
+        try:
+            await query.answer(f"Loading animation: {status}", show_alert=True)
+        except Exception:
+            pass
+        return
+
+    # Format: inv_loading:{channel_id}:{optional_link_id}
     payload = cb[len(_LOADING_CB):]
     parts = payload.split(":", 1)
     ch_id_raw = parts[0]
-    link_id   = parts[1] if len(parts) > 1 else ""
 
     try:
         ch_id = int(ch_id_raw)
     except ValueError:
         ch_id = ch_id_raw
 
-    # Determine expiry from settings
     try:
         from filter_poster import get_link_expiry_minutes
         chat_id = query.message.chat_id if query.message else 0
@@ -241,29 +267,9 @@ async def handle_inv_loading_callback(update, context):
     except Exception:
         exp_min = int(LINK_EXPIRY_MINUTES)
 
-    # ── Start loading animation + link creation concurrently ─────────────────
-    loading_frames = ["⏳ .", "⏳ ..", "⏳ ...", "⏳ ..", "⏳ ."]
-    stop_animation = asyncio.Event()
-    link_holder = {"url": None, "error": None}
-
-    async def _animate():
-        """Show loading dots while link is being generated."""
-        i = 0
-        while not stop_animation.is_set():
-            frame = loading_frames[i % len(loading_frames)]
-            try:
-                await query.edit_message_reply_markup(
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton(frame, callback_data="noop")
-                    ]])
-                )
-            except Exception:
-                pass
-            await asyncio.sleep(0.4)
-            i += 1
+    link_holder = {"url": None}
 
     async def _make_link():
-        """Create the real Telegram invite link."""
         try:
             expire_ts = int(time.time()) + (exp_min * 60)
             inv = await context.bot.create_chat_invite_link(
@@ -278,20 +284,41 @@ async def handle_inv_loading_callback(update, context):
             logger.debug(f"[inline] invite link error: {exc}")
             link_holder["url"] = PUBLIC_ANIME_CHANNEL_URL
 
-    # Run both concurrently
-    anim_task = asyncio.create_task(_animate())
-    await _make_link()
-    stop_animation.set()
-    anim_task.cancel()
-    try:
-        await anim_task
-    except asyncio.CancelledError:
-        pass
+    if get_animation_enabled():
+        # Animation runs simultaneously with link generation — zero speed cost
+        loading_frames = [".", " ..", " ...", " ..", " .."]
+        stop_anim = asyncio.Event()
+
+        async def _animate():
+            i = 0
+            while not stop_anim.is_set():
+                frame = loading_frames[i % len(loading_frames)]
+                try:
+                    await query.edit_message_reply_markup(
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(frame, callback_data="noop")
+                        ]])
+                    )
+                except Exception:
+                    pass
+                await asyncio.sleep(0.35)
+                i += 1
+
+        anim_task = asyncio.create_task(_animate())
+        await _make_link()           # Link creation happens here
+        stop_anim.set()
+        anim_task.cancel()
+        try:
+            await anim_task
+        except asyncio.CancelledError:
+            pass
+    else:
+        await _make_link()
 
     join_url = link_holder["url"] or PUBLIC_ANIME_CHANNEL_URL
-    join_text = small_caps("join now ✅")
+    join_text = small_caps("ᴊᴏɪɴ ɴᴏᴡ ✅")
 
-    # Update button with real link
+    # Update the inline button to show real link
     try:
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
@@ -299,12 +326,15 @@ async def handle_inv_loading_callback(update, context):
             ]])
         )
     except Exception:
-        # Fallback: send as new message
+        # Fallback: send original link text as message
         try:
             await query.message.reply_text(
-                b(small_caps("your invite link is ready!")) + "\n\n"
-                + f'<a href="{join_url}">{small_caps("join now")}</a>',
+                "<b>ʜᴇʀᴇ ɪs ʏᴏᴜʀ ʟɪɴᴋ! ᴄʟɪᴄᴋ ʙᴇʟᴏᴡ ᴛᴏ ᴘʀᴏᴄᴇᴇᴅ</b>\n"
+                "<i>ɴᴏᴛᴇ: ɪꜰ ᴛʜᴇ ʟɪɴᴋ ɪs ᴇxᴘɪʀᴇᴅ, ᴘʟᴇᴀsᴇ ᴄʟɪᴄᴋ ᴛʜᴇ ᴘᴏsᴛ ʟɪɴᴋ ᴀɢᴀɪɴ.</i>",
                 parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(join_text, url=join_url)
+                ]]),
                 disable_web_page_preview=True,
             )
         except Exception:
