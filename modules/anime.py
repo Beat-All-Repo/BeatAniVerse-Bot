@@ -1538,8 +1538,9 @@ async def _send_alpha_filter_panel(
     update: Update, context: ContextTypes.DEFAULT_TYPE, letter: str
 ) -> None:
     """
-    Send paged anime-channel list for a single alphabet letter in GC.
-    Each button is a real expirable Telegram invite link to that anime's channel.
+    Single-letter alpha filter panel.
+    Shows INSTANTLY with deep-links. Background task upgrades to invite links.
+    Uses both generated_links (by channel_title) and anime_channel_links (by anime_title).
     """
     chat_id = update.effective_chat.id
     uid     = update.effective_user.id if update.effective_user else 0
@@ -1561,7 +1562,6 @@ async def _send_alpha_filter_panel(
 
     try:
         from database_dual import get_all_links, get_all_anime_channel_links
-        all_links = get_all_links(limit=2000, offset=0) or []
         exp_min = 60
         try:
             from filter_poster import get_link_expiry_minutes
@@ -1572,76 +1572,72 @@ async def _send_alpha_filter_panel(
         return
 
     ll = letter.lower()
-    # (channel_title, channel_id, link_id)
+    bot_uname = context.bot.username or ""
+
+    # matched = list of {"title": str, "cid": str|int, "lid": str, "url": str|None}
     matched: list = []
-    seen: set = set()
+    seen_titles: set = set()
 
-    for row in all_links:
-        lid, cid, ctitle = row[0], row[1], (row[2] or "").strip()
-        if not ctitle or ctitle.lower() in seen:
-            continue
-        if not ctitle.lower().startswith(ll):
-            continue
-        seen.add(ctitle.lower())
-        matched.append((ctitle, cid, lid))
-
-    # Also pull from anime_channel_links table
+    # --- Source 1: anime_channel_links (has real numeric channel_id + anime_title) ---
     try:
-        acl = get_all_anime_channel_links() or []
-        for arow in acl:
+        acl_rows = get_all_anime_channel_links() or []
+        for arow in acl_rows:
+            # arow = (id, anime_title, channel_id, channel_title, link_id, created_at)
             an_title = (arow[1] or "").strip()
-            if not an_title or an_title.lower() in seen:
+            if not an_title:
                 continue
-            if not an_title.lower().startswith(ll):
+            tl = an_title.lower()
+            if tl in seen_titles or not tl.startswith(ll):
                 continue
-            seen.add(an_title.lower())
-            matched.append((an_title, arow[2], arow[4]))
+            seen_titles.add(tl)
+            lid  = arow[4] or ""
+            cid  = arow[2]   # numeric channel_id
+            deep = f"https://t.me/{bot_uname}?start={lid}" if (lid and bot_uname) else None
+            matched.append({"title": an_title, "cid": cid, "lid": lid, "url": deep})
+    except Exception:
+        pass
+
+    # --- Source 2: generated_links (channel_title field, channel_username as cid) ---
+    try:
+        all_links = get_all_links(limit=2000, offset=0) or []
+        for row in all_links:
+            # row = (link_id, channel_username, channel_title, ...)
+            lid     = row[0] or ""
+            ch_user = (row[1] or "").strip()   # "@username" or numeric str
+            ctitle  = (row[2] or "").strip()
+            if not ctitle:
+                ctitle = ch_user  # fallback: use username as display title
+            tl = ctitle.lower()
+            if tl in seen_titles or not tl.startswith(ll):
+                continue
+            seen_titles.add(tl)
+            deep = f"https://t.me/{bot_uname}?start={lid}" if (lid and bot_uname) else None
+            matched.append({"title": ctitle, "cid": ch_user, "lid": lid, "url": deep})
     except Exception:
         pass
 
     if not matched:
-        return  # silent — no channels with this letter
-
-    matched.sort(key=lambda x: x[0].lower())
-
-    expire_ts = int(time.time()) + (exp_min * 60)
-
-    # Build invite links concurrently for all matched channels
-    async def _make_inv(cid, title):
-        if not cid:
-            return title, None
+        # Still show something even if nothing found — tell user
         try:
-            cid_int = int(cid)
-        except (ValueError, TypeError):
-            cid_int = cid
-        try:
-            inv = await context.bot.create_chat_invite_link(
-                chat_id=cid_int,
-                expire_date=expire_ts,
-                member_limit=1,
-                creates_join_request=False,
-                name=f"A-{ll}-{int(time.time())}",
+            msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"<b>🎌 Anime — {letter.upper()}</b>\n\n<i>No anime starting with '{letter.upper()}' found in database.</i>",
+                parse_mode=ParseMode.HTML,
             )
-            return title, inv.invite_link
+            await asyncio.sleep(8)
+            try:
+                await context.bot.delete_message(chat_id, msg.message_id)
+            except Exception:
+                pass
         except Exception:
-            return title, None
+            pass
+        return
 
-    inv_results = await asyncio.gather(
-        *[_make_inv(cid, ct) for ct, cid, _ in matched],
-        return_exceptions=True,
-    )
+    matched.sort(key=lambda x: x["title"].lower())
+    total_count = len(matched)
 
-    # Filter to only items with successful invite links
-    items_with_links = []
-    for i, res in enumerate(inv_results):
-        if isinstance(res, tuple) and res[1]:
-            items_with_links.append((matched[i][0], res[1]))
-        else:
-            # Fallback: still show button without link if channel unavailable
-            items_with_links.append((matched[i][0], None))
-
-    pages = [items_with_links[i:i + _FILTER_PAGE_SIZE]
-             for i in range(0, len(items_with_links), _FILTER_PAGE_SIZE)]
+    pages = [matched[i:i + _FILTER_PAGE_SIZE]
+             for i in range(0, len(matched), _FILTER_PAGE_SIZE)]
     total_p = len(pages)
 
     _active_filter_panels[uid] = {
@@ -1653,12 +1649,12 @@ async def _send_alpha_filter_panel(
         items = pages[pi]
         btns: list = []
         brow: list = []
-        for ct, inv_url in items:
-            if inv_url:
-                brow.append(InlineKeyboardButton(_sc(ct[:28]), url=inv_url))
-            else:
-                # No link available → noop button (still visible)
-                brow.append(InlineKeyboardButton(_sc(ct[:28]), callback_data="noop"))
+        for item in items:
+            url   = item.get("url")
+            title = item.get("title", "?")
+            label = _sc(title[:28])
+            btn   = InlineKeyboardButton(label, url=url) if url else InlineKeyboardButton(label, callback_data="noop")
+            brow.append(btn)
             if len(brow) == 2:
                 btns.append(brow)
                 brow = []
@@ -1666,21 +1662,22 @@ async def _send_alpha_filter_panel(
             btns.append(brow)
         nav = []
         if pi > 0:
-            nav.append(InlineKeyboardButton("🔙", callback_data=f"alpha_page:{uid}:{letter}:{pi-1}"))
+            nav.append(InlineKeyboardButton("◀", callback_data=f"alpha_page:{uid}:{letter}:{pi-1}"))
+        nav.append(InlineKeyboardButton(f"{pi+1}/{total_p}", callback_data="noop"))
         if pi < total_p - 1:
-            nav.append(InlineKeyboardButton("🔜", callback_data=f"alpha_page:{uid}:{letter}:{pi+1}"))
-        if nav:
-            btns.append(nav)
-        btns.append([InlineKeyboardButton("✖️ Close", callback_data=f"alpha_close:{uid}")])
+            nav.append(InlineKeyboardButton("▶", callback_data=f"alpha_page:{uid}:{letter}:{pi+1}"))
+        btns.append(nav)
+        btns.append([InlineKeyboardButton("✖ Close", callback_data=f"alpha_close:{uid}")])
         return InlineKeyboardMarkup(btns)
 
     text = (
-        f"<b>🎌 {_sc('Anime')} — <code>{letter.upper()}</code></b>\n"
-        f"<i>{_sc(f'Page 1/{total_p}')} • {_sc(f'{len(items_with_links)} results')} • "
-        f"{_sc(f'Links expire in {exp_min}m')}</i>\n"
-        f"━━━━━━━━━━━━━━━━━━━"
+        f"<b>🎌 Anime — <code>{letter.upper()}</code></b>\n"
+        f"<i>{total_count} results • Tap to join • Links expire in {exp_min}m</i>\n"
+        f"────────────────"
     )
 
+    # SEND IMMEDIATELY
+    sent = None
     try:
         sent = await context.bot.send_message(
             chat_id=chat_id, text=text,
@@ -1690,6 +1687,43 @@ async def _send_alpha_filter_panel(
     except Exception:
         _active_filter_panels.pop(uid, None)
         return
+
+    # BACKGROUND: upgrade page 0 buttons to real invite links
+    async def _upgrade_links():
+        await asyncio.sleep(0.5)
+        expire_ts = int(time.time()) + (exp_min * 60)
+        changed = False
+        for item in pages[0]:
+            if item.get("url") and "t.me/" in item.get("url", "") and "?start=" in item.get("url", ""):
+                # Has deep link already — try to upgrade to real invite
+                cid = item.get("cid")
+                if not cid:
+                    continue
+                try:
+                    cid_int = int(str(cid).replace("@", "")) if str(cid).lstrip("-").isdigit() else cid
+                except Exception:
+                    cid_int = cid
+                try:
+                    inv = await context.bot.create_chat_invite_link(
+                        chat_id=cid_int, expire_date=expire_ts,
+                        member_limit=1, creates_join_request=False,
+                        name=f"A{ll[:1]}",
+                    )
+                    if inv.invite_link:
+                        item["url"] = inv.invite_link
+                        changed = True
+                except Exception:
+                    pass
+        if changed and sent:
+            try:
+                await context.bot.edit_message_reply_markup(
+                    chat_id=chat_id, message_id=sent.message_id,
+                    reply_markup=_build_kb(0),
+                )
+            except Exception:
+                pass
+
+    asyncio.create_task(_upgrade_links())
 
     async def _auto_del():
         await asyncio.sleep(_FILTER_PANEL_TTL)
@@ -1750,16 +1784,21 @@ async def _alpha_filter_callback(
             return
         items = pages[pi]
 
-        # pages now contain (ctitle, invite_url) tuples
+        # pages contain dicts: {"title": str, "url": str|None, "cid": ..., "lid": ...}
         btns: List[List] = []
         brow: List = []
         for item in items:
-            # Support both old (lid, cid, ct) and new (ct, inv_url) formats
-            if len(item) == 3:
-                _, _, ct = item
-                btn_url = None
+            if isinstance(item, dict):
+                ct = item.get("title", "?")
+                btn_url = item.get("url")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                ct = item[-1] if len(item) == 2 else item[0]
+                btn_url = item[1] if len(item) == 2 else item[-1]
+                if not isinstance(btn_url, str) or not btn_url.startswith("http"):
+                    btn_url = None
             else:
-                ct, btn_url = item
+                ct = str(item)
+                btn_url = None
             label = _sc(ct[:28])
             if btn_url:
                 brow.append(InlineKeyboardButton(label, url=btn_url))
