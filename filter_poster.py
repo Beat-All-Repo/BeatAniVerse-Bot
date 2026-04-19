@@ -86,6 +86,9 @@ HERE_LINK_TEXT_DEFAULT: str = os.getenv(
     "HERE_IS_LINK_TEXT",
     "ʜᴇʀᴇ ɪs ʏᴏᴜʀ ʟɪɴᴋ! ᴄʟɪᴄᴋ ʙᴇʟᴏᴡ ᴛᴏ ᴘʀᴏᴄᴇᴇᴅ"
 )
+HERE_LINK_NOTE_DEFAULT: str = (
+    "ɴᴏᴛᴇ: ɪꜰ ᴛʜᴇ ʟɪɴᴋ ɪs ᴇxᴘɪʀᴇᴅ, ᴘʟᴇᴀsᴇ ᴄʟɪᴄᴋ ᴛʜᴇ ᴘᴏsᴛ ʟɪɴᴋ ᴀɢᴀɪɴ."
+)
 LINK_EXPIRED_TEXT_DEFAULT: str = os.getenv(
     "LINK_EXPIRED_TEXT",
     "This invite link has expired. Please request a new one."
@@ -913,9 +916,9 @@ async def _deliver_text_mode(
     here_text = _here_link_text()
 
     text = (
-        f"<b>{html.escape(here_text)}</b>\n\n"
-        f"<b>{_styled(html.escape(title))}</b>\n\n"
-        f"<i>{_styled_plain('Link expires in')} {expiry_minutes} {_styled_plain('minutes.')}</i>"
+        f"<b>{html.escape(here_text)}</b>\n"
+        f"<i>{html.escape(HERE_LINK_NOTE_DEFAULT)}</i>\n\n"
+        f"<b>{_styled(html.escape(title))}</b>"
     )
 
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(join_text, url=join_url)]])
@@ -1214,7 +1217,35 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     if not matched_anime:
-        return  # Not an anime name → completely silent, do nothing
+        # Special case: user explicitly asked for hindi dub of something not in DB
+        # Show a "we don't have it but you can request" message
+        _hindi_kw = any(kw in lower for kw in ('hindi', ' hin ', 'hindi dub', 'dubbed', 'hindi dubbed'))
+        if _hindi_kw and len(lower.strip()) >= 4:
+            _req_name = text.strip()
+            try:
+                _req_kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        _styled_plain("📩 Request Hindi Dub"),
+                        callback_data=f"request_hindi:{_req_name[:46]}",
+                    )
+                ]])
+                _req_msg = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "<b>" + _styled(html.escape(_req_name)) + "</b>\n\n"
+                        + "\U0001f614 <i>" + _styled("ɴᴏᴛ ᴀᴠᴀɪʟᴀʙʟᴇ ɪɴ ʜɪɴᴅɪ ᴅᴜʙ.") + "</i>\n"
+                        + "<i>" + _styled("ʙᴜᴛ ᴡᴇ ᴡɪʟʟ ᴛʀʏ ᴏᴜʀ ʙᴇsᴛ!") + "</i> \U0001f4aa"
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=_req_kb,
+                    reply_to_message_id=reply_to,
+                    disable_web_page_preview=True,
+                )
+                if _req_msg:
+                    asyncio.create_task(_auto_delete(context.bot, chat_id, _req_msg.message_id, delay=90))
+            except Exception:
+                pass
+        return  # Not an anime name → silent
 
     bot = context.bot
     template = get_filter_template(chat_id)
@@ -1384,13 +1415,17 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         t_d = data.get("title", {}) or {}
         eng = t_d.get("english") or t_d.get("romaji") or matched_anime
         genres = ", ".join((data.get("genres") or [])[:3])
-        caption = f"<b>{html.escape(eng)}</b>"
+        caption = (
+            f"<b>{_here_link_text()}</b>\n"
+            f"<i>{HERE_LINK_NOTE_DEFAULT}</i>\n\n"
+            f"<b>{html.escape(eng)}</b>"
+        )
         if native:
             caption += f"\n<i>{html.escape(native)}</i>"
         if genres:
             caption += f"\n\n» <b>{_styled_plain('Genre')}:</b> {_styled(html.escape(genres))}"
-        if len(caption) > 900:
-            caption = caption[:896] + "…"
+        if len(caption) > 1024:
+            caption = caption[:1020] + "…"
     except Exception as be:
         logger.debug(f"[filter] poster build: {be}")
 
@@ -1566,6 +1601,19 @@ def get_filter_poster_settings_text(chat_id: int = 0) -> str:
     )
 
 
+def _get_anim_state() -> bool:
+    """Safely check animation toggle state."""
+    try:
+        from handlers.inline_handler import get_animation_enabled
+        return get_animation_enabled()
+    except Exception:
+        try:
+            from database_dual import get_setting
+            return get_setting("inline_anim_enabled", "true") != "false"
+        except Exception:
+            return True
+
+
 def build_filter_poster_settings_keyboard(chat_id: int = 0) -> Any:
     """Build the admin panel keyboard for filter poster settings."""
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -1628,6 +1676,15 @@ def build_filter_poster_settings_keyboard(chat_id: int = 0) -> Any:
             InlineKeyboardButton(
                 "🎌 PRE-GEN ALL POSTERS",
                 callback_data=f"fp_pregen_all_{chat_id}",
+            )
+        ],
+        # Loading animation toggle
+        [
+            InlineKeyboardButton(
+                "⏳ ANIM: " + (
+                    "ON ✅" if _get_anim_state() else "OFF 🔕"
+                ),
+                callback_data="inline_anim_toggle",
             )
         ],
         [
