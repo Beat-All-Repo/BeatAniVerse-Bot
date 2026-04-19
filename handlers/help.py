@@ -147,7 +147,7 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         pass
 
 
-@force_sub_required
+"""@force_sub_required
 async def alive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         b("✅ Bot is Alive!") + "\n\n"
@@ -157,7 +157,7 @@ async def alive_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     await safe_reply(update, text)
 
-
+"""
 @force_sub_required
 async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
@@ -381,43 +381,28 @@ async def cmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for chunk in [text[i:i+TELE_MAX] for i in range(0, len(text), TELE_MAX)]:
         pages.append(chunk)
 
-    send_to = update.effective_user.id
+    # Always send in the current chat — never try DM (avoids Forbidden + auto-delete confusion)
+    send_to = update.effective_chat.id
     close_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Close", callback_data="close_message")]])
     sent_any = False
     for i, page_text in enumerate(pages):
         suffix = f"\n\n<i>Page {i+1}/{len(pages)}</i>" if len(pages) > 1 else ""
         kb = close_kb if i == len(pages) - 1 else None
         try:
-            await context.bot.send_message(
+            msg = await context.bot.send_message(
                 chat_id=send_to,
                 text=page_text + suffix,
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb,
                 disable_web_page_preview=True,
             )
-            sent_any = True
-        except Forbidden:
-            send_to = update.effective_chat.id
-            try:
-                await context.bot.send_message(
-                    chat_id=send_to,
-                    text=page_text + suffix,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=True,
-                )
+            if msg:
                 sent_any = True
-            except Exception as exc:
-                logger.debug(f"cmd_command send failed: {exc}")
+                # Never auto-delete command list
+                try:
+                    from core.auto_delete import schedule_delete
+                    pass  # do nothing - skip scheduling
+                except Exception:
+                    pass
         except Exception as exc:
-            logger.debug(f"cmd_command DM failed: {exc}")
-
-    if sent_any and send_to == update.effective_user.id and update.effective_chat.id != update.effective_user.id:
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=b(small_caps("📋 command list sent to your dm!")),
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            pass
+            logger.debug(f"cmd_command send failed: {exc}")
