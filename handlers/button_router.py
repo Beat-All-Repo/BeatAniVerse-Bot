@@ -2838,7 +2838,29 @@ async def button_handler(
         info = feat_map.get(data, (data.replace("feat_", "/"), "Feature command."))
         cmd_feat, desc_feat = info
         try:
-            await query.answer(f"{cmd_feat} — {desc_feat[:100]}", show_alert=True)
+            # Show feature help as proper panel with back button
+            try:
+                await query.answer()
+            except Exception:
+                pass
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    b(small_caps(f"✨ {cmd_feat}")) + "\n\n"
+                    + bq(small_caps(desc_feat)) + "\n\n"
+                    + "<i>" + small_caps("use this command in any group where bot is admin") + "</i>"
+                ),
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 " + small_caps("back to features"), callback_data="adm_page_2")],
+                    [InlineKeyboardButton("✖ " + small_caps("close"), callback_data="close_message")],
+                ]),
+                disable_web_page_preview=True,
+            )
         except Exception:
             pass
         return
@@ -3383,16 +3405,32 @@ async def button_handler(
         info = _MOD_INFO.get(data)
         if info:
             mod_label, cmds, desc = info
-            cmds_text = " | ".join(f"<code>{c}</code>" for c in cmds) if cmds else small_caps("see /help for commands")
-            msg = (
+            cmds_text = "\n".join(f"• <code>{c}</code>" for c in cmds) if cmds else small_caps("see /help for commands")
+            panel_msg = (
                 b(f"📦 {small_caps(mod_label)}") + "\n\n"
                 + bq(small_caps(desc)) + "\n\n"
-                + b(small_caps("commands: ")) + cmds_text
+                + b(small_caps("commands:")) + "\n" + cmds_text + "\n\n"
+                + "<i>" + small_caps("use these commands in any connected group") + "</i>"
             )
             try:
-                await query.answer(f"📦 {mod_label} — {desc[:80]}", show_alert=True)
+                await query.answer()
             except Exception:
                 pass
+            # Delete old panel, show module card with Back button
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=panel_msg,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 " + small_caps("back to modules"), callback_data="adm_page_4")],
+                    [InlineKeyboardButton("✖ " + small_caps("close"), callback_data="close_message")],
+                ]),
+                disable_web_page_preview=True,
+            )
         else:
             try:
                 await query.answer(f"Module: {data.replace('mod_', '')}", show_alert=True)
