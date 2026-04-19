@@ -328,14 +328,96 @@ async def reload_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id not in (ADMIN_ID, OWNER_ID): return
     await delete_update_message(update, context)
+    await _send_logs_panel(context.bot, update.effective_chat.id, lines=80)
+
+
+async def _send_logs_panel(bot, chat_id: int, lines: int = 80, query=None) -> None:
+    """Send logs with Close / Refresh / Watch Online buttons."""
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+    from core.text_utils import e, b, code
+    import os, glob
+
+    # Find latest log file
+    log_text = ""
     try:
-        with open("logs/bot.log", "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()[-60:]
-        log_text = "".join(lines)
-        if len(log_text) > 3900: log_text = log_text[-3900:]
-        await safe_reply(update, f"<pre>{e(log_text)}</pre>")
+        # Try multiple common log paths
+        for pattern in ["logs/bot.log", "logs/*.log", "bot.log", "/tmp/bot.log"]:
+            files = glob.glob(pattern)
+            if files:
+                log_file = max(files, key=os.path.getmtime)
+                with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                    all_lines = f.readlines()
+                log_text = "".join(all_lines[-lines:])
+                break
     except Exception as exc:
-        await safe_reply(update, b("❌ Error reading logs: ") + code(e(str(exc))))
+        log_text = f"Error reading logs: {exc}"
+
+    if not log_text:
+        log_text = "No logs found."
+
+    # Truncate for Telegram caption limit
+    max_len = 3800
+    if len(log_text) > max_len:
+        log_text = "…(truncated)\n" + log_text[-max_len:]
+
+    # Count log levels for summary
+    errors   = log_text.count("[ERROR]") + log_text.count("ERROR")
+    warnings = log_text.count("[WARNING]") + log_text.count("WARNING")
+    infos    = log_text.count("[INFO]") + log_text.count("INFO")
+
+    summary = (
+        f"<b>📋 Bot Logs</b> — last {lines} lines\n"
+        f"🔴 Errors: <code>{errors}</code>  "
+        f"🟡 Warnings: <code>{warnings}</code>  "
+        f"🟢 Info: <code>{infos}</code>\n\n"
+        f"<pre>{e(log_text)}</pre>"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("♻️ Refresh", callback_data="admin_logs_refresh"),
+            InlineKeyboardButton("📄 Last 200", callback_data="admin_logs_200"),
+            InlineKeyboardButton("🔴 Errors Only", callback_data="admin_logs_errors"),
+        ],
+        [
+            InlineKeyboardButton("🟡 Warnings", callback_data="admin_logs_warnings"),
+            InlineKeyboardButton("⬇️ Download", callback_data="admin_logs_download"),
+            InlineKeyboardButton("🗑 Clear", callback_data="admin_logs_clear"),
+        ],
+        [
+            InlineKeyboardButton("✖ Close", callback_data="close_message"),
+        ],
+    ])
+
+    if query:
+        try:
+            await query.edit_message_text(summary, parse_mode="HTML", reply_markup=kb)
+            return
+        except Exception:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+    try:
+        await bot.send_message(
+            chat_id=chat_id, text=summary, parse_mode="HTML",
+            reply_markup=kb, disable_web_page_preview=True,
+        )
+    except Exception:
+        # If too long, send as document
+        try:
+            from io import BytesIO
+            doc = BytesIO(log_text.encode())
+            doc.name = "bot_logs.txt"
+            await bot.send_document(
+                chat_id=chat_id, document=doc,
+                caption="<b>📋 Bot Logs</b>",
+                parse_mode="HTML", reply_markup=kb,
+            )
+        except Exception:
+            pass
+
+
 
 @force_sub_required
 async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -509,9 +591,9 @@ async def _show_panel_img_list(
     rows = []
     nav = []
     if page > 0:
-        nav.append(bold_button("◀", callback_data=f"panel_img_page_{page-1}"))
+        nav.append(bold_button("🔙", callback_data=f"panel_img_page_{page-1}"))
     if start + PAGE_SIZE < total:
-        nav.append(bold_button("▶", callback_data=f"panel_img_page_{page+1}"))
+        nav.append(bold_button("🔜", callback_data=f"panel_img_page_{page+1}"))
     if nav:
         rows.append(nav)
     rows.append([
