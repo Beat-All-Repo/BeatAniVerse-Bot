@@ -61,7 +61,7 @@ def _register_all_handlers(app: Application) -> None:
     # Import handlers
     from handlers.start import start, delete_update_message
     from handlers.help import (
-        help_command, ping_command, alive_command,
+        help_command, ping_command,
         id_command, info_command, cmd_command,
     )
     from handlers.admin_panel import send_admin_menu
