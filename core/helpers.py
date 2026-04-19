@@ -214,21 +214,35 @@ async def safe_edit_text(
     parse_mode: str = ParseMode.HTML,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> Optional[Any]:
-    """Edit a message text safely; fall back to sending new message."""
+    """Edit a message text safely; fall back to deleting and sending new message."""
     try:
         return await query.edit_message_text(
             text=text, parse_mode=parse_mode, reply_markup=reply_markup
         )
     except BadRequest as exc:
-        if "message is not modified" in str(exc).lower():
+        err = str(exc).lower()
+        if "message is not modified" in err:
             return None
+        # Photo/caption message → edit caption instead
+        if "there is no text in the message to edit" in err or "message can't be edited" in err:
+            try:
+                return await query.edit_message_caption(
+                    caption=text, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+            except Exception:
+                pass
     except Exception:
         pass
+    # Last resort: delete old and send new
     try:
         chat_id = query.message.chat_id
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        bot = query.get_bot() if hasattr(query, "get_bot") else query.message.get_bot()
         return await safe_send_message(
-            query.message.get_bot(),
-            chat_id, text, parse_mode, reply_markup
+            bot, chat_id, text, parse_mode, reply_markup, no_auto_delete=True
         )
     except Exception as exc:
         logger.debug(f"safe_edit_text fallback failed: {exc}")
