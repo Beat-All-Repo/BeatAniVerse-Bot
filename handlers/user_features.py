@@ -386,11 +386,62 @@ async def send_user_features_panel(
     chat_id: int = 0,
     page: int = 0,
 ) -> None:
-    """Send the user-facing features panel showing available commands."""
+    """User features panel — 4×2 grid of feature buttons. Click = help for that feature."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.constants import ParseMode
-    from core.text_utils import b, bq, small_caps, e
-    from core.helpers import safe_send_message, safe_send_photo
+    from core.text_utils import b, bq, small_caps as sc
+    from core.helpers import safe_send_message
+
+    if not chat_id:
+        if query:
+            chat_id = query.message.chat_id
+        elif update and update.effective_chat:
+            chat_id = update.effective_chat.id
+
+    if query:
+        try:
+            await query.delete_message()
+        except Exception:
+            pass
+
+    # 8 feature buttons in 4×2 grid — each opens its own help card
+    FEATURES = [
+        ("🎌 Anime",       "uf_help:anime",    "uf"),
+        ("📚 Manga",       "uf_help:manga",    "uf"),
+        ("🎬 Movie",       "uf_help:movie",    "uf"),
+        ("👤 Character",   "uf_help:character","uf"),
+        ("🤗 Reactions",   "uf_help:reactions","uf"),
+        ("💬 Chatbot",     "uf_help:chatbot",  "uf"),
+        ("📝 Notes",       "uf_help:notes",    "uf"),
+        ("⚖️ Group Tools", "uf_help:group",    "uf"),
+    ]
+
+    rows = []
+    for i in range(0, len(FEATURES), 2):
+        row = []
+        for label, cb, _ in FEATURES[i:i+2]:
+            row.append(InlineKeyboardButton(label, callback_data=cb))
+        rows.append(row)
+    rows.append([InlineKeyboardButton("✖ Close", callback_data="close_message")])
+
+    text = (
+        b("🎮 User Features") + "\n\n"
+        + bq(sc("tap any feature to see its commands and usage"))
+    )
+
+    markup = InlineKeyboardMarkup(rows)
+    try:
+        from core.panel_image import get_panel_pic_async
+        from core.helpers import safe_send_photo
+        img = await get_panel_pic_async("features")
+        if img:
+            sent = await safe_send_photo(context.bot, chat_id, img, caption=text, reply_markup=markup)
+            if sent:
+                return
+    except Exception:
+        pass
+    await safe_send_message(context.bot, chat_id, text, reply_markup=markup)
+
+
 
     if not chat_id:
         if query:
@@ -469,7 +520,6 @@ async def send_user_features_panel(
         nav_row,
         [InlineKeyboardButton("✖️ " + sc("close"), callback_data="close_message")],
     ]
-
 
     try:
         from core.panel_image import get_panel_pic_async
