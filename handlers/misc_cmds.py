@@ -424,7 +424,30 @@ async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if update.effective_user.id not in (ADMIN_ID, OWNER_ID): return
     await delete_update_message(update, context)
     if not context.args:
-        await safe_reply(update, b("Usage: /connect @group_or_id"))
+        await safe_reply(update, b("Usage: /connect @group_or_id\nOR: /connect set1 (in a group, to assign API set)"))
+        return
+
+    # Handle: /connect set1  (assign current chat to API set)
+    arg0 = context.args[0].lower()
+    if arg0.startswith("set") and len(arg0) <= 8:
+        set_name = arg0
+        chat_id = update.effective_chat.id
+        try:
+            from core.chatbot_engine import assign_chat_to_set, get_all_sets
+            prev_set = __import__("core.chatbot_engine", fromlist=["get_set_for_chat"]).get_set_for_chat(chat_id)
+            assign_chat_to_set(chat_id, set_name)
+            all_sets = get_all_sets()
+            if set_name not in all_sets:
+                await safe_reply(update,
+                    b(f"⚠️ Set '{set_name}' doesn't exist yet.") + "\n"
+                    + bq(f"Add API keys for it from Admin Panel → Chatbot → Sets.\n"
+                         f"Available sets: {', '.join(all_sets)}"))
+            else:
+                await safe_reply(update,
+                    b(f"✅ Chat assigned to API set: <code>{set_name}</code>") + "\n"
+                    + (bq(f"Previous set: {prev_set}") if prev_set != set_name else ""))
+        except Exception as exc:
+            await safe_reply(update, b(f"❌ Error: {str(exc)[:100]}"))
         return
     try:
         from database_dual import db_manager
