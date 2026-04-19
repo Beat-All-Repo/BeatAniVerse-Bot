@@ -232,9 +232,41 @@ async def handle_admin_message(
         user_states.pop(uid, None)
         return
 
-    # ── Chatbot API key input ─────────────────────────────────────────────────
+    # ── Send poster to channel (custom channel input) ─────────────────────────
 
-    if isinstance(state, str) and state.startswith("chatbot_key:"):
+    if isinstance(state, str) and state.startswith("AWAITING_SEND_TO_CHANNEL:"):
+        parts    = state.split(":", 2)
+        src_chat_s = parts[1] if len(parts) > 1 else ""
+        src_msg_s  = parts[2] if len(parts) > 2 else ""
+        dest_input = text.strip()
+        try:
+            src_chat_i = int(src_chat_s)
+            src_msg_i  = int(src_msg_s)
+            try:
+                dest = int(dest_input)
+            except ValueError:
+                dest = dest_input  # @username
+            import json as _json
+            from database_dual import get_setting
+            raw  = get_setting(f"last_poster_{uid}", "")
+            pdat = _json.loads(raw) if raw else {}
+            cap  = pdat.get("caption", "")
+            await context.bot.copy_message(
+                chat_id=dest,
+                from_chat_id=src_chat_i,
+                message_id=src_msg_i,
+                caption=cap,
+                parse_mode="HTML",
+            )
+            await safe_send_message(context.bot, chat_id, b("✅ Poster sent to channel!"))
+        except Exception as exc:
+            from core.helpers import UserFriendlyError
+            await safe_send_message(context.bot, chat_id,
+                b("❌ Failed: ") + code(e(str(exc)[:120])))
+        user_states.pop(uid, None)
+        return
+
+
         from handlers.chatbot_panel import handle_chatbot_key_input
         handled = await handle_chatbot_key_input(update, context, state)
         if handled:
