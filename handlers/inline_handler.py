@@ -319,18 +319,19 @@ async def handle_inv_loading_callback(update, context):
     join_text = small_caps("ᴊᴏɪɴ ɴᴏᴡ ✅")
 
     # Update the inline button to show real link
+    sent_msg = None
     try:
         await query.edit_message_reply_markup(
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(join_text, url=join_url)
             ]])
         )
+        sent_msg = query.message  # track for auto-delete
     except Exception:
-        # Fallback: send original link text as message
         try:
-            await query.message.reply_text(
-                "<b>ʜᴇʀᴇ ɪs ʏᴏᴜʀ ʟɪɴᴋ! ᴄʟɪᴄᴋ ʙᴇʟᴏᴡ ᴛᴏ ᴘʀᴏᴄᴇᴇᴅ</b>\n"
-                "<i>ɴᴏᴛᴇ: ɪꜰ ᴛʜᴇ ʟɪɴᴋ ɪs ᴇxᴘɪʀᴇᴅ, ᴘʟᴇᴀsᴇ ᴄʟɪᴄᴋ ᴛʜᴇ ᴘᴏsᴛ ʟɪɴᴋ ᴀɢᴀɪɴ.</i>",
+            sent_msg = await query.message.reply_text(
+                "<b>ʜᴇʀᴇ ɪs ʏᴏᴜʀ ʟɪɴᴋ!</b>\n"
+                "<i>ʟɪɴᴋ ᴇxᴘɪʀᴇs ɪɴ 5 ᴍɪɴᴜᴛᴇs.</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton(join_text, url=join_url)
@@ -339,4 +340,14 @@ async def handle_inv_loading_callback(update, context):
             )
         except Exception:
             pass
+
+    # Auto-delete the message after 5 minutes
+    if sent_msg:
+        async def _del_after():
+            await asyncio.sleep(300)
+            try:
+                await sent_msg.delete()
+            except Exception:
+                pass
+        asyncio.create_task(_del_after())
 
