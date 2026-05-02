@@ -77,8 +77,8 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("commands",cmd_command))
     app.add_handler(CommandHandler("id",      id_command))
     app.add_handler(CommandHandler("info",    info_command))
-    
-    
+
+
 
     # ── Media content commands ────────────────────────────────────────────────
     from handlers.media_cmds import (
@@ -274,6 +274,10 @@ def _register_all_handlers(app: Application) -> None:
         logger.warning(f"badwords: {_e}")
 
     # ── Callback query router ─────────────────────────────────────────────────
+    # filter_pick MUST be before the catch-all button_handler
+    from handlers.group import filter_pick_callback
+    app.add_handler(CallbackQueryHandler(filter_pick_callback, pattern=r"^filter_pick"))
+
     from handlers.button_router import button_handler
     app.add_handler(CallbackQueryHandler(button_handler))
 
