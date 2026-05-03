@@ -139,6 +139,11 @@ def ensure_tables():
         _pg_run("""DO $$ BEGIN
             ALTER TABLE chatbot_api_keys ADD COLUMN IF NOT EXISTS set_name TEXT NOT NULL DEFAULT 'default';
         EXCEPTION WHEN OTHERS THEN NULL; END $$""")
+        # Anime request tracking table (for owner notifications)
+        _pg_run("""CREATE TABLE IF NOT EXISTS chatbot_anime_requests
+            (id SERIAL PRIMARY KEY, chat_id BIGINT NOT NULL, anime_name TEXT NOT NULL,
+             user_id BIGINT DEFAULT 0, requested_at TIMESTAMP DEFAULT NOW(),
+             UNIQUE(chat_id, anime_name))""")
     except Exception as e:
         logger.debug(f"[chatbot] ensure_tables: {e}")
 
@@ -407,6 +412,86 @@ async def _get_anime_invite(bot, q, chat_id):
         logger.debug(f"[chatbot] anime invite: {e}")
     return None
 
+
+# ── Official Hindi dub check (AniList) ───────────────────────────────────────
+_HINDI_DUB_NOTIFIED: set = set()   # track (chat_id, normalized_name) to avoid spam
+
+
+def _check_official_hindi_dub_sync(anime_name: str) -> dict:
+    """
+    Query AniList for anime_name.
+    Returns dict:
+      {
+        "found": bool,      # anime found on AniList
+        "popular": bool,    # popularity > 5000 (likely widely dubbed)
+        "title": str,       # resolved English title
+        "site_url": str,
+      }
+    """
+    import requests as _req
+    _GQL = """query($s:String){Media(search:$s,type:ANIME,sort:[SEARCH_MATCH,POPULARITY_DESC]){
+      id siteUrl title{english romaji} popularity countryOfOrigin}}"""
+    try:
+        r = _req.post(
+            "https://graphql.anilist.co",
+            json={"query": _GQL, "variables": {"s": anime_name}},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json().get("data", {}).get("Media")
+            if data:
+                td = data.get("title", {}) or {}
+                title = td.get("english") or td.get("romaji") or anime_name
+                pop = data.get("popularity") or 0
+                return {
+                    "found": True,
+                    "popular": pop > 5000,
+                    "title": title,
+                    "site_url": data.get("siteUrl", ""),
+                }
+    except Exception as _ex:
+        logger.debug(f"[chatbot] hindi dub check: {_ex}")
+    return {"found": False, "popular": False, "title": anime_name, "site_url": ""}
+
+
+async def _notify_owner_new_request(bot, anime_name: str, user_id: int,
+                                     user_name: str, chat_id: int) -> None:
+    """Notify owner once per unique anime request (not in DB, has Hindi dub)."""
+    key = f"{chat_id}:{normalize_text(anime_name)}"
+    if key in _HINDI_DUB_NOTIFIED:
+        return
+    _HINDI_DUB_NOTIFIED.add(key)
+    # Persist to DB so restarts don't re-notify
+    try:
+        from database_dual import _pg_run
+        _pg_run(
+            "INSERT INTO chatbot_anime_requests (chat_id, anime_name, user_id, requested_at)"
+            " VALUES (%s, %s, %s, NOW()) ON CONFLICT DO NOTHING",
+            (chat_id, anime_name.lower().strip(), user_id),
+        )
+    except Exception:
+        pass
+    try:
+        from core.config import OWNER_ID
+        if OWNER_ID:
+            await bot.send_message(
+                chat_id=OWNER_ID,
+                text=(
+                    f"🆕 <b>New Anime Requested via Chatbot</b>\n\n"
+                    f"Anime: <b>{anime_name}</b>\n"
+                    f"User: <a href='tg://user?id={user_id}'>{user_name}</a> "
+                    f"(<code>{user_id}</code>)\n"
+                    f"Chat: <code>{chat_id}</code>\n"
+                    f"Status: ✅ Officially available in Hindi dub — <b>not yet in DB</b>"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+    except Exception as ex:
+        logger.debug(f"[chatbot] owner notify: {ex}")
+
+
 # ── AI providers ──────────────────────────────────────────────────────────────
 async def _call_gemini(api_key, messages, system):
     if not api_key: return None
@@ -509,11 +594,55 @@ async def handle_chatbot_message(bot, chat_id, user_id, user_name, message_text,
         if q:
             inv = await _get_anime_invite(bot, q, chat_id)
             if inv:
+                # Found in DB — give expirable link
                 resp = f"haan bhai! {q} ka link ye raha — <a href='{inv}'>join karo</a> 🎌\n<i>jaldi karo, 5 min mein expire hoga!</i>"
+                # Admin: also show capacity info
+                try:
+                    from core.config import ADMIN_ID, OWNER_ID, ADMIN_CONTACT_USERNAME
+                    if user_id in (ADMIN_ID, OWNER_ID):
+                        resp += f"\n\n<i>👑 Admin: anime found in DB, link generated. Use /admin to manage channels.</i>"
+                except Exception:
+                    pass
                 await reply_fn(resp)
                 async with _lock(chat_id):
                     s2 = _sessions.get(chat_id,{}).get(user_id)
                     if s2: s2.history.append({"role":"assistant","content":f"Gave invite link for {q}"})
+                return True
+            else:
+                # Not in DB — check official Hindi dub status
+                loop = asyncio.get_event_loop()
+                al_info = await loop.run_in_executor(None, _check_official_hindi_dub_sync, q)
+
+                if not al_info.get("found"):
+                    # Anime not even on AniList — probably not a real anime or typo
+                    await reply_fn(
+                        f"yaar <b>{q}</b> ka toh koi anime mila hi nahi 😕\n"
+                        f"spelling check karo ya koi aur naam try karo!"
+                    )
+                    return True
+
+                if not al_info.get("popular"):
+                    # Low popularity → likely no official Hindi dub
+                    await reply_fn(
+                        f"😔 <b>{al_info['title']}</b> officially Hindi dubbed nahi hai abhi.\n"
+                        f"Isliye hamare paas nahi hai — sorry yaar! 🙏"
+                    )
+                    return True
+
+                # Officially dubbed / popular — we're expanding
+                try:
+                    from core.config import ADMIN_CONTACT_USERNAME
+                    owner_contact = f"@{ADMIN_CONTACT_USERNAME}" if ADMIN_CONTACT_USERNAME else "owner ko"
+                except Exception:
+                    owner_contact = "owner ko"
+
+                await reply_fn(
+                    f"🌍 <b>{al_info['title']}</b> officially available hai!\n"
+                    f"Hum apna universe expand kar rahe hain — yeh jaldi add hoga. \n"
+                    f"Abhi ke liye sorry yaar 😊 Urgent query ke liye {owner_contact} contact karo!"
+                )
+                # Notify owner once about this new unmet request
+                await _notify_owner_new_request(bot, al_info["title"], user_id, user_name, chat_id)
                 return True
 
     # AI call
@@ -533,7 +662,21 @@ async def handle_chatbot_message(bot, chat_id, user_id, user_name, message_text,
         if inv:
             reply = f"ye lo {q} ka link — <a href='{inv}'>join karo</a> 🎌\n<i>5 min mein expire hoga!</i>"
         else:
-            reply = f"yaar {q} abhi available nahi hai 😕 /request se request karo"
+            # Check official Hindi dub status for AI-triggered requests too
+            loop = asyncio.get_event_loop()
+            al_info = await loop.run_in_executor(None, _check_official_hindi_dub_sync, q)
+            if not al_info.get("found"):
+                reply = f"yaar {q} ka koi official anime nahi mila 😕 spelling check karo!"
+            elif not al_info.get("popular"):
+                reply = f"😔 {al_info['title']} abhi officially Hindi dubbed nahi hai, isliye hamare paas nahi 🙏"
+            else:
+                try:
+                    from core.config import ADMIN_CONTACT_USERNAME
+                    oc = f"@{ADMIN_CONTACT_USERNAME}" if ADMIN_CONTACT_USERNAME else "owner ko"
+                except Exception:
+                    oc = "owner ko"
+                reply = f"🌍 {al_info['title']} officially available hai! Hum jaldi add karenge.\nUrgent? {oc} contact karo 😊"
+                await _notify_owner_new_request(bot, al_info["title"], user_id, user_name, chat_id)
 
     if not reply: reply = random.choice(_FALLBACK_REPLIES.get(gender, _FALLBACK_REPLIES["bot"]))
 
