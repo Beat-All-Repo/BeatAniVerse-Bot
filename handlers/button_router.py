@@ -5,6 +5,7 @@ Central callback query router — all InlineKeyboardButton callbacks handled her
 Answers every query immediately. Routes to sub-handlers by data prefix.
 """
 import asyncio
+import html
 import json
 import time
 from typing import Optional
@@ -1135,6 +1136,46 @@ async def button_handler(
             return
         count = _get_cache_count() if _FILTER_POSTER_AVAILABLE else 0
         await safe_answer(query, f"📦 {count} posters cached")
+        return
+
+    # ── SET CHANNEL DISPLAY NAME ──────────────────────────────────────────────
+    if data == "fp_set_channel_name":
+        if not is_admin:
+            return
+        user_states[uid] = "set_channel_display_name"
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("📛 set channel display name")) + "\n\n"
+            + bq(small_caps(
+                "send the name you want to appear on filter posters.\n"
+                "example: NARUTO VERSE DUB\n\n"
+                "this will replace the watermark text automatically."
+            )),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("filter_poster_settings"), _close_btn()]]),
+        )
+        return
+
+    # ── SET CAPTION TEMPLATE ───────────────────────────────────────────────────
+    if data == "fp_set_caption_tmpl":
+        if not is_admin:
+            return
+        user_states[uid] = "set_filter_caption_template"
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("📝 set filter caption template")) + "\n\n"
+            + bq(small_caps(
+                "send your caption template. available variables:\n"
+                "{title} — anime title\n"
+                "{native} — japanese title\n"
+                "{genres} — genres\n"
+                "{channel} — your channel name\n"
+                "{here_text} — \'here is your link\' text\n"
+                "{info} — status/episodes info lines\n\n"
+                "example:\n"
+                "<b>{title}</b>\n{genres}\n\nvia {channel}"
+            )),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("filter_poster_settings"), _close_btn()]]),
+        )
         return
 
     if data == "fp_clear_cache":
@@ -3180,7 +3221,7 @@ async def button_handler(
             for row in rows_al[:20]:
                 ch_id_al   = row[1]
                 ch_title_al = row[2] or ch_id_al
-                text_al += f"• <b>{e(ch_title_al)}</b> → <code>{e(str(ch_id_al))}</code>\n"
+                text_al += f"• <b>{html.escape(str(ch_title_al))}</b> → <code>{html.escape(str(ch_id_al))}</code>\n"
         else:
             text_al += bq(small_caps(
                 "no links yet.\n\n"
