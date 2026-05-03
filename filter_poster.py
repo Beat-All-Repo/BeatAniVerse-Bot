@@ -169,6 +169,55 @@ def _styled_plain(text: str) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  HINGLISH NOISE STRIPPING — extract clean anime name from natural messages
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Words that commonly appear around anime names in Hinglish messages but are NOT part of the name
+_HINGLISH_NOISE: set = {
+    # Hindi particles / postpositions
+    'ka', 'ki', 'ke', 'ko', 'se', 'mein', 'par', 'pe', 'tak', 'aur', 'ya', 'bhi',
+    'ne', 'hai', 'hain', 'tha', 'thi', 'the', 'hoga', 'hogi', 'hoge', 'hona',
+    'nahi', 'nhi', 'mat', 'na', 'sab', 'koi', 'kuch', 'wala', 'wali', 'wale',
+    # Address words
+    'bhai', 'yaar', 'dost', 'bro', 'sis', 'sir', 'ji',
+    # Request words
+    'do', 'de', 'dedo', 'dena', 'batao', 'bata', 'chahiye', 'chahie', 'please',
+    'plz', 'pls', 'bhejo', 'bhej', 'share', 'send',
+    # Media type words (not part of proper name in queries)
+    'anime', 'manga', 'show', 'series', 'ova', 'movie',
+    # Link / channel words
+    'link', 'invite', 'join', 'channel', 'group', 'watch', 'dekhu', 'dekhna',
+    'kahan', 'wahan', 'kaha', 'milega', 'milegi',
+    # Dub / language words
+    'dub', 'dubbed', 'hindi', 'english', 'sub', 'subbed', 'dubbed',
+    # Episode / season words
+    'season', 'ep', 'episode', 'part', 'vol',
+    # Common fillers
+    'abhi', 'jaldi', 'please', 'yeh', 'ye', 'wo', 'woh', 'is', 'us',
+    'iska', 'uska', 'kya', 'kaisa', 'kaise', 'kab', 'kahaan',
+    # Pronouns
+    'mujhe', 'mujko', 'hame', 'hamko', 'humko', 'apko', 'aapko', 'muje',
+}
+
+
+def _extract_clean_anime_name(text: str) -> str:
+    """
+    Extract just the anime name from a Hinglish/natural-language message.
+    e.g. 'shikimori anime ka hindi dub hai'  →  'shikimori'
+         'link do shikimori ka'              →  'shikimori'
+         'attack on titan ka link chahiye'   →  'attack on titan'
+    """
+    if not text:
+        return ""
+    # Already normalized to lowercase by caller
+    words = text.strip().split()
+    cleaned = [w for w in words if w not in _HINGLISH_NOISE and len(w) >= 2]
+    # Remove leading/trailing noise (single-char artifacts)
+    result = ' '.join(cleaned).strip()
+    return result
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  DB HELPERS
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -1076,10 +1125,10 @@ async def _deliver_poster_mode(
 #  DB ANIME LOOKUP HELPER — used by get_or_generate_poster
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _find_anime_in_db_sync(lower_text: str):
+def _find_anime_in_db_sync(lower_text: str, *, clean_name: str = ""):
     """
     Search DB for a matching anime title.
-    Both the input text and DB titles are Unicode-normalized before comparison.
+    Tries both the full lower_text AND the clean_name (stripped of noise words).
     Returns (matched_title, channel_id, link_id, has_hindi_dub).
     Returns (None, None, None, None) if no match found.
     """
@@ -1087,85 +1136,125 @@ def _find_anime_in_db_sync(lower_text: str):
     try:
         from core.chatbot_engine import normalize_text as _normalize
         lower_text = _normalize(lower_text)
+        if clean_name:
+            clean_name = _normalize(clean_name)
     except Exception:
         lower_text = lower_text.lower()
+        clean_name = clean_name.lower() if clean_name else ""
 
     def _norm(t: str) -> str:
         try:
             from core.chatbot_engine import normalize_text as _n
             return _n(t)
         except Exception:
-            return t.lower()
+            return t.lower().replace("'", "").replace("'", "")
+
+    def _title_matches(a_title_norm: str, search_text: str) -> bool:
+        """Check if normalized DB title matches search text using multiple strategies."""
+        if not a_title_norm or len(a_title_norm) < 2:
+            return False
+        # 1. Exact match
+        if a_title_norm == search_text:
+            return True
+        # 2. DB title is substring of search text (whole word)
+        try:
+            if re.search(r'\b' + re.escape(a_title_norm) + r'\b', search_text):
+                return True
+        except re.error:
+            pass
+        # 3. Search text is substring of DB title (whole word) — short queries
+        if len(search_text) >= 3:
+            try:
+                if re.search(r'\b' + re.escape(search_text) + r'\b', a_title_norm):
+                    return True
+            except re.error:
+                pass
+        # 4. Word-level: any significant word (≥3 chars) from DB title found in search
+        words = [w for w in a_title_norm.split() if len(w) >= 3 and w not in _HINGLISH_NOISE]
+        if words and any(
+            re.search(r'\b' + re.escape(w) + r'\b', search_text)
+            for w in words
+        ):
+            return True
+        # 5. Word-level reverse: significant words from search found in DB title
+        s_words = [w for w in search_text.split() if len(w) >= 3 and w not in _HINGLISH_NOISE]
+        if s_words and any(
+            re.search(r'\b' + re.escape(w) + r'\b', a_title_norm)
+            for w in s_words
+        ):
+            return True
+        return False
+
+    def _is_hindi_channel(channel_title: str, anime_title_norm: str) -> bool:
+        """Detect if this is a Hindi dub channel."""
+        ct = _norm(channel_title)
+        return (
+            'hindi' in ct or 'hin dub' in ct or ct.endswith(' hin') or
+            'hindi' in anime_title_norm or
+            re.search(r'\bhin\b', ct) is not None
+        )
+
     try:
         from database_dual import get_all_links, get_all_anime_channel_links
 
-        all_links = get_all_links(limit=1000, offset=0) or []
-        seen_titles: set = set()
-        all_matched: list = []   # (channel_title, channel_id, link_id, is_hindi)
+        # Build set of search queries to try (full text + clean name)
+        search_queries = [lower_text]
+        if clean_name and clean_name != lower_text and len(clean_name) >= 2:
+            search_queries.append(clean_name)
+
+        all_links = get_all_links(limit=2000, offset=0) or []
+        seen_channel_ids: set = set()
+        all_matched: list = []   # (display_title, channel_id, link_id, is_hindi)
 
         for row in all_links:
             link_id_r    = row[0]
             channel_id_r = row[1]
             channel_title_r = (row[2] or "").strip()
-            if not channel_title_r or _norm(channel_title_r) in seen_titles:
+
+            # If no title, try channel_username as last resort title
+            if not channel_title_r:
+                uname = str(row[1] or "")
+                channel_title_r = uname.lstrip("@-").replace("_", " ") if uname else ""
+
+            if not channel_title_r or len(channel_title_r) < 2:
                 continue
-            seen_titles.add(_norm(channel_title_r))
-            if len(channel_title_r) < 2:
+            a_title_norm = _norm(channel_title_r)
+            if a_title_norm in seen_channel_ids:
                 continue
 
-            a_title = _norm(channel_title_r)
-            is_match = False
+            for sq in search_queries:
+                if _title_matches(a_title_norm, sq):
+                    seen_channel_ids.add(a_title_norm)
+                    is_hin = _is_hindi_channel(channel_title_r, a_title_norm)
+                    all_matched.append((channel_title_r, channel_id_r, link_id_r, is_hin))
+                    break
 
-            # Exact / boundary match
-            if a_title == lower_text:
-                is_match = True
-            elif re.search(r'\b' + re.escape(a_title) + r'\b', lower_text):
-                is_match = True
-            elif len(lower_text) >= 4 and re.search(r'\b' + re.escape(lower_text) + r'\b', a_title):
-                is_match = True
-            else:
-                # Word-level: any significant word (≥4 chars) from anime title present
-                words = [w for w in a_title.split() if len(w) >= 4]
-                if words and any(re.search(r'\b' + re.escape(w) + r'\b', lower_text) for w in words):
-                    is_match = True
+        # Always check anime_channel_links (not just as fallback)
+        try:
+            acl = get_all_anime_channel_links() or []
+            for arow in acl:
+                an_title = (arow[1] or "").strip()
+                if not an_title or len(an_title) < 2:
+                    continue
+                an_norm = _norm(an_title)
+                channel_id_acl = arow[2]
+                # Skip if already found this channel
+                if str(channel_id_acl) in [str(m[1]) for m in all_matched]:
+                    continue
 
-            if is_match:
-                is_hin = ('hindi' in a_title or
-                          re.search(r'\bhin\b', a_title) is not None or
-                          a_title.endswith(' hindi'))
-                all_matched.append((channel_title_r, channel_id_r, link_id_r, is_hin))
-
-        # Fallback: anime_channel_links table
-        if not all_matched:
-            try:
-                acl = get_all_anime_channel_links() or []
-                for arow in acl:
-                    an_title = (arow[1] or "").strip()
-                    an_lower = an_title.lower()
-                    if len(an_lower) < 2:
-                        continue
-                    is_match = False
-                    if an_lower == lower_text:
-                        is_match = True
-                    elif re.search(r'\b' + re.escape(an_lower) + r'\b', lower_text):
-                        is_match = True
-                    elif len(lower_text) >= 4 and re.search(r'\b' + re.escape(lower_text) + r'\b', an_lower):
-                        is_match = True
-                    else:
-                        words = [w for w in an_lower.split() if len(w) >= 4]
-                        if words and any(re.search(r'\b' + re.escape(w) + r'\b', lower_text) for w in words):
-                            is_match = True
-                    if is_match:
-                        ch_title = (arow[3] or "").lower()
-                        is_hin = 'hindi' in ch_title or 'hindi' in an_lower
-                        all_matched.append((an_title, arow[2], arow[4], is_hin))
-            except Exception:
-                pass
+                for sq in search_queries:
+                    if _title_matches(an_norm, sq):
+                        ch_title = (arow[3] or an_title)
+                        is_hin = _is_hindi_channel(ch_title, an_norm)
+                        all_matched.append((an_title, channel_id_acl, arow[4], is_hin))
+                        break
+        except Exception as ex:
+            logger.debug(f"[DB] anime_channel_links check: {ex}")
 
         if not all_matched:
             return None, None, None, None
 
-        # Best match = first; has_hindi = any channel for this anime has Hindi
+        # Best match = first result; has_hindi = any matched channel is Hindi
         best = all_matched[0]
         has_hindi = any(c[3] for c in all_matched)
         return best[0], best[1], best[2], has_hindi
