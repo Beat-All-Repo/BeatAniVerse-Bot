@@ -94,6 +94,14 @@ async def post_init(application: Application) -> None:
     except Exception as _e:
         logger.warning(f"poster_cache migration: {_e}")
 
+    # Migrate search analytics table
+    try:
+        from database_dual import ensure_search_analytics_table
+        ensure_search_analytics_table()
+        logger.info("✅ search_analytics table ready")
+    except Exception as _e:
+        logger.warning(f"search_analytics migration: {_e}")
+
     # Start panel prewarm loop
     asyncio.create_task(_prewarm_all_caches(application.bot))
 
