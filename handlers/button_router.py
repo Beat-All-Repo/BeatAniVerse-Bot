@@ -177,6 +177,45 @@ async def button_handler(
             pass
         return
 
+    if data == "top_searches_refresh":
+        # Refresh /top leaderboard inline
+        try:
+            from database_dual import get_top_search_analytics
+            top = get_top_search_analytics(limit=10)
+        except Exception:
+            top = []
+        if not top:
+            try:
+                from filter_poster import get_top_filter_searches
+                top = get_top_filter_searches(limit=10)
+            except Exception:
+                top = []
+        border = "▰" * 13
+        lines = [
+            "<b>╔══════════════════════╗</b>",
+            "<blockquote><b>   ║✦ 🏆 ᴛᴏᴘ sᴇᴀʀᴄʜᴇs ✦║</b></blockquote>",
+            "<b>╚══════════════════════╝</b>",
+            f"<b>┌─➤{border}</b>",
+            "<blockquote>",
+        ]
+        medals = ["🥇", "🥈", "🥉"] + ["🎖️"] * 10
+        for i, (title, count) in enumerate((top or [])[:10]):
+            medal = medals[i]
+            lines.append(f"<b>{medal} {i+1}. {html.escape(title[:30])}</b>  <code>{count} 🔍</code>")
+        if not top:
+            lines.append("<i>No data yet.</i>")
+        lines.append("</blockquote>")
+        lines.append(f"<b>└─➤{border}</b>")
+        lines.append("\n<i>Unique searches in last 2 weeks per user</i>")
+        text = "\n".join(lines)
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="top_searches_refresh")]])
+        try:
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            pass
+        return
+
     if data == "verify_subscription":
         from handlers.start import start
         await start(update, context)
@@ -969,6 +1008,9 @@ async def button_handler(
                 fp_template = parts[3]
                 if _FILTER_POSTER_AVAILABLE:
                     _set_default_poster_template(fp_chat_id, fp_template)
+                    # Also save as global default (chat_id=0) so all chats see it
+                    if fp_chat_id != 0:
+                        _set_default_poster_template(0, fp_template)
                     await safe_answer(query, f"✅ Template set to {fp_template}")
                     _t2 = get_filter_poster_settings_text(fp_chat_id)
                     _k2 = build_filter_poster_settings_keyboard(fp_chat_id)
