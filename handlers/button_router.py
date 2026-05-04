@@ -208,7 +208,6 @@ async def button_handler(
         lines.append(f"<b>└─➤{border}</b>")
         lines.append("\n<i>Unique searches in last 2 weeks per user</i>")
         text = "\n".join(lines)
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Refresh", callback_data="top_searches_refresh")]])
         try:
             await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
