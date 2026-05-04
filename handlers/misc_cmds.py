@@ -625,3 +625,67 @@ async def _show_panel_img_list(
     ])
     await safe_send_message(bot, chat_id, text,
                             reply_markup=InlineKeyboardMarkup(rows))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  /top — Show top 10 most searched anime
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def top_searches_command(
+    update, context
+) -> None:
+    """
+    /top  — Shows the top 10 most searched anime from combined search analytics.
+    Unique user searches only, counted at most once per user per 2 weeks.
+    Available to everyone in groups and DMs.
+    """
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+
+    try:
+        from database_dual import get_top_search_analytics
+        top = get_top_search_analytics(limit=10)
+    except Exception:
+        top = []
+
+    if not top:
+        # Fallback: try filter_poster analytics
+        try:
+            from filter_poster import get_top_filter_searches
+            top = get_top_filter_searches(limit=10)
+        except Exception:
+            top = []
+
+    if not top:
+        await update.message.reply_text(
+            "<b> Top Searches</b>\n\n<i>No search data yet. Start using the bot!</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    border = "▰" * 13
+    lines = [
+        f"<b>╔══════════════════════╗</b>",
+        f"<blockquote><b>   ║✦ 🏆 ᴛᴏᴘ sᴇᴀʀᴄʜᴇs ✦║</b></blockquote>",
+        f"<b>╚══════════════════════╝</b>",
+        f"<b>┌─➤{border}</b>",
+        "<blockquote>",
+    ]
+    medals = ["🥇", "🥈", "🥉"] + ["🎖️"] * 10
+    for i, (title, count) in enumerate(top[:10]):
+        medal = medals[i]
+        title_sc = title[:30]
+        lines.append(f"<b>{medal} {i+1}. {title_sc}</b>  <code>{count} 🔍</code>")
+    lines.append("</blockquote>")
+    lines.append(f"<b>└─➤{border}</b>")
+    lines.append(f"\n<i>Top searches in last 2 weeks </i>")
+
+    text = "\n".join(lines)
+
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Refresh", callback_data="top_searches_refresh"),
+    ]])
+
+    try:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await update.message.reply_text(text, parse_mode="HTML")
