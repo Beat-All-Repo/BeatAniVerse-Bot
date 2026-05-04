@@ -1650,10 +1650,13 @@ async def _send_alpha_filter_panel(
         btns: list = []
         brow: list = []
         for item in items:
-            url   = item.get("url")
             title = item.get("title", "?")
             label = _sc(title[:28])
-            btn   = InlineKeyboardButton(label, url=url) if url else InlineKeyboardButton(label, callback_data="noop")
+            # Use callback so clicking sends the FULL FILTER (poster + caption + expirable link)
+            btn = InlineKeyboardButton(
+                label,
+                callback_data=f"alpha_filter_pick:{chat_id}:{title[:48]}"
+            )
             brow.append(btn)
             if len(brow) == 2:
                 btns.append(brow)
@@ -1672,7 +1675,7 @@ async def _send_alpha_filter_panel(
 
     text = (
         f"<b>🎌 Anime — <code>{letter.upper()}</code></b>\n"
-        f"<i>{total_count} results • Tap to join • Links expire in {exp_min}m</i>\n"
+        f"<i>{total_count} results • Tap for full filter • Links expire in {exp_min}m</i>\n"
         f"────────────────"
     )
 
@@ -1740,7 +1743,7 @@ async def _send_alpha_filter_panel(
 async def _alpha_filter_callback(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Handle 🔙 / 🔜 navigation and ✖️ close for alpha-filter panels."""
+    """Handle navigation, close, and anime-pick for alpha-filter panels."""
     query = update.callback_query
     if not query:
         return
@@ -1749,6 +1752,40 @@ async def _alpha_filter_callback(
     except Exception:
         pass
     cb = query.data or ""
+
+    # ── Anime pick → fire full filter (same as typing the anime name) ────────
+    if cb.startswith("alpha_filter_pick:"):
+        parts = cb.split(":", 2)
+        if len(parts) < 3:
+            return
+        try:
+            _pick_chat_id = int(parts[1])
+        except ValueError:
+            return
+        _pick_title = parts[2]
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        try:
+            from filter_poster import (
+                get_or_generate_poster,
+                get_auto_delete_seconds,
+                get_link_expiry_minutes,
+            )
+            asyncio.create_task(
+                get_or_generate_poster(
+                    bot=context.bot,
+                    chat_id=_pick_chat_id,
+                    title=_pick_title,
+                    reply_to_message_id=None,
+                    auto_delete_seconds=get_auto_delete_seconds(_pick_chat_id),
+                    link_expiry_minutes=get_link_expiry_minutes(_pick_chat_id),
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"alpha_filter_pick error: {exc}")
+        return
 
     if cb.startswith("alpha_close:"):
         uid = int(cb.split(":")[1])
@@ -1783,27 +1820,22 @@ async def _alpha_filter_callback(
         if pi < 0 or pi >= total_p:
             return
         items = pages[pi]
+        _pick_chat_id = panel.get("chat_id", 0)
 
-        # pages contain dicts: {"title": str, "url": str|None, "cid": ..., "lid": ...}
         btns: List[List] = []
         brow: List = []
         for item in items:
             if isinstance(item, dict):
                 ct = item.get("title", "?")
-                btn_url = item.get("url")
-            elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                ct = item[-1] if len(item) == 2 else item[0]
-                btn_url = item[1] if len(item) == 2 else item[-1]
-                if not isinstance(btn_url, str) or not btn_url.startswith("http"):
-                    btn_url = None
+            elif isinstance(item, (list, tuple)) and len(item) >= 1:
+                ct = item[0]
             else:
                 ct = str(item)
-                btn_url = None
             label = _sc(ct[:28])
-            if btn_url:
-                brow.append(InlineKeyboardButton(label, url=btn_url))
-            else:
-                brow.append(InlineKeyboardButton(label, callback_data="noop"))
+            brow.append(InlineKeyboardButton(
+                label,
+                callback_data=f"alpha_filter_pick:{_pick_chat_id}:{ct[:48]}"
+            ))
             if len(brow) == 2:
                 btns.append(brow)
                 brow = []
@@ -1967,7 +1999,7 @@ def register(app) -> None:
     # Alpha-filter panel navigation
     app.add_handler(CallbackQueryHandler(
         _alpha_filter_callback,
-        pattern=r"^(alpha_page:|alpha_close:)",
+        pattern=r"^(alpha_page:|alpha_close:|alpha_filter_pick:)",
     ))
 
     # Custom thumbnail photo (check awaiting_thumbnail in user_data)
@@ -2003,7 +2035,7 @@ try:
     ))
     dispatcher.add_handler(CQH(
         _alpha_filter_callback,
-        pattern=r"^(alpha_page:|alpha_close:)",
+        pattern=r"^(alpha_page:|alpha_close:|alpha_filter_pick:)",
         run_async=True,
     ))
     dispatcher.add_handler(MH(
