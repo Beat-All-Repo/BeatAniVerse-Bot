@@ -182,6 +182,12 @@ def _pg_exec_many(sql: str, params=()) -> Optional[list]:
             return []
 
 
+# Alias for readable multi-row queries
+def _pg_exec_all(sql: str, params=()) -> Optional[list]:
+    """Execute SQL, return cursor.fetchall() or empty list."""
+    return _pg_exec_many(sql, params) or []
+
+
 def _pg_run(sql: str, params=()) -> bool:
     """Execute SQL with no return value. Returns True on success."""
     with _pg() as conn:
@@ -1770,3 +1776,63 @@ def extract_anime_name_from_title(channel_title: str) -> str:
     # If result is too short (< 3 chars), return original
     return t if len(t) >= 3 else channel_title.strip()
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  SEARCH ANALYTICS — /top command support
+# ──────────────────────────────────────────────────────────────────────────────
+
+def ensure_search_analytics_table() -> None:
+    """Create search_analytics table if it doesn't exist."""
+    _pg_run("""
+        CREATE TABLE IF NOT EXISTS search_analytics (
+            anime_title   TEXT   NOT NULL,
+            user_id       BIGINT NOT NULL,
+            last_searched TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (anime_title, user_id)
+        )
+    """)
+
+
+def record_search_analytics(user_id: int, anime_title: str) -> None:
+    """
+    Record a search hit for user_id + anime_title.
+    Each user is counted at most ONCE per 2 weeks per title.
+    """
+    if not user_id or not anime_title:
+        return
+    try:
+        from datetime import timedelta
+        ensure_search_analytics_table()
+        key = anime_title.strip().lower()
+        row = _pg_exec(
+            "SELECT last_searched FROM search_analytics WHERE anime_title=%s AND user_id=%s",
+            (key, user_id),
+        )
+        two_weeks_ago = datetime.utcnow() - timedelta(weeks=2)
+        if row and row[0] and row[0] >= two_weeks_ago:
+            return  # Already counted within 2 weeks
+        _pg_run("""
+            INSERT INTO search_analytics (anime_title, user_id, last_searched)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (anime_title, user_id)
+            DO UPDATE SET last_searched = NOW()
+        """, (key, user_id))
+    except Exception:
+        pass
+
+
+def get_top_search_analytics(limit: int = 10) -> list:
+    """
+    Return top `limit` anime titles sorted by unique-user search count.
+    Returns list of (title, count) tuples.
+    """
+    try:
+        ensure_search_analytics_table()
+        rows = _pg_exec_all(
+            "SELECT anime_title, COUNT(DISTINCT user_id) AS cnt "
+            "FROM search_analytics GROUP BY anime_title ORDER BY cnt DESC LIMIT %s",
+            (limit,),
+        )
+        return [(r[0], int(r[1])) for r in (rows or [])]
+    except Exception:
+        return []
