@@ -111,6 +111,7 @@ def _register_all_handlers(app: Application) -> None:
         clones_command, reload_command, logs_command,
         connect_command, disconnect_command, connections_command,
         set_loader_cmd, addpanelimg_command, getfileid_command,
+        top_searches_command,
     )
     app.add_handler(CommandHandler("stats",          stats_command,          filters=admin_filter))
     app.add_handler(CommandHandler("sysstats",       sysstats_command,       filters=admin_filter))
@@ -132,6 +133,7 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("addclone",       addclone_command,       filters=admin_filter))
     app.add_handler(CommandHandler("clones",         clones_command,         filters=admin_filter))
     app.add_handler(CommandHandler(["reload", "restart"], reload_command,    filters=admin_filter))
+    app.add_handler(CommandHandler("top",                top_searches_command))   # public
     app.add_handler(CommandHandler("logs",           logs_command,           filters=admin_filter))
     app.add_handler(CommandHandler("connect",        connect_command,        filters=admin_filter))
     app.add_handler(CommandHandler("disconnect",     disconnect_command,     filters=admin_filter))
