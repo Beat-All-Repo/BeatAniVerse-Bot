@@ -94,6 +94,33 @@ LINK_EXPIRED_TEXT_DEFAULT: str = os.getenv(
     "This invite link has expired. Please request a new one."
 )
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  ✏️  FILTER CAPTION CUSTOMIZATION
+#  Change these ENV vars (or edit the defaults below) to customize captions
+#  without touching any other code.
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#  BEAT_CHANNEL_NAME       — Short brand name shown in caption footer
+#  BEAT_CHANNEL_HANDLE     — Your channel @handle shown in caption
+#  BEAT_DEFAULT_QUALITY    — Quality options shown in every caption
+#  BEAT_DEFAULT_AUDIO      — Audio label when Hindi dub IS available
+#  BEAT_DEFAULT_AUDIO_ENG  — Audio label when Hindi dub is NOT available
+#  BEAT_FILTER_BORDER_CHAR — Character repeated to draw the ▰ border lines
+#  BEAT_FILTER_BORDER_COUNT— How many times to repeat the border character
+#  BEAT_STICKER_PATH       — Path to channel logo/sticker used as watermark
+#
+BEAT_CHANNEL_NAME: str        = os.getenv("BEAT_CHANNEL_NAME",       "BeatAnime")
+BEAT_CHANNEL_HANDLE: str      = os.getenv("BEAT_CHANNEL_HANDLE",     "@Beat_Anime_Hindi_Dubbed")
+BEAT_DEFAULT_QUALITY: str     = os.getenv("BEAT_DEFAULT_QUALITY",    "480p ,720p ,1080p")
+BEAT_DEFAULT_AUDIO: str       = os.getenv("BEAT_DEFAULT_AUDIO",      "[ʜɪɴ] ᴅᴜʙ| #ᴏꜰꜰɪᴄɪᴀʟ ᴅᴜʙ")
+BEAT_DEFAULT_AUDIO_ENG: str   = os.getenv("BEAT_DEFAULT_AUDIO_ENG",  "[ᴇɴɢ] ꜱᴜʙ| #ᴏꜰꜰɪᴄɪᴀʟ ꜱᴜʙ")
+BEAT_FILTER_BORDER_CHAR: str  = os.getenv("BEAT_FILTER_BORDER_CHAR", "▰")
+BEAT_FILTER_BORDER_COUNT: int = int(os.getenv("BEAT_FILTER_BORDER_COUNT", "13") or "13")
+BEAT_STICKER_PATH: str        = os.getenv(
+    "BEAT_STICKER_PATH",
+    os.path.join(os.path.dirname(__file__), "assets", "channel_logo.webp"),
+)
+
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _BASE      = os.path.dirname(__file__)
 FONT_DIR   = os.path.join(_BASE, "fonts")
@@ -297,7 +324,11 @@ def set_filter_poster_enabled(chat_id: int, enabled: bool) -> None:
 
 
 def get_filter_template(chat_id: int) -> str:
-    return _setting(f"filter_poster_template_{chat_id}", "ani")
+    # Try chat-specific first, then fall back to global (chat_id=0) set from admin panel
+    val = _setting(f"filter_poster_template_{chat_id}", "")
+    if not val and chat_id != 0:
+        val = _setting("filter_poster_template_0", "ani")
+    return val or "ani"
 
 
 def set_filter_template(chat_id: int, template: str) -> None:
@@ -352,20 +383,21 @@ def _default_wm_b() -> dict:
 def _default_wm_c() -> dict:
     """Default layer C: channel logo sticker at bottom-left, small (12% width)."""
     import os as _os
-    # Try multiple path locations for Render.com / local environments
+    # Try BEAT_STICKER_PATH first, then multiple fallback locations
     _candidates = [
+        BEAT_STICKER_PATH,
         _os.path.join(_os.path.dirname(__file__), "assets", "channel_logo.webp"),
         "/app/assets/channel_logo.webp",
         _os.path.join(_os.getcwd(), "assets", "channel_logo.webp"),
     ]
-    _logo_path = next((p for p in _candidates if _os.path.exists(p)), "")
+    _logo_path = next((p for p in _candidates if p and _os.path.exists(p)), "")
     _local_url = f"file://{_logo_path}" if _logo_path else ""
     return {
         "enabled":  bool(_logo_path),   # ON by default only when logo file found
         "file_id":  "",                  # Telegram file_id (set when admin sends sticker in bot)
         "url":      _local_url,          # Local fallback: assets/channel_logo.webp
         "position": "bottom-left",       # Bottom-left corner, small
-        "scale":    0.10,                # 10% of poster width = small logo
+        "scale":    0.12,                # 12% of poster width = small logo
         "opacity":  230,
     }
 
@@ -400,6 +432,176 @@ def _here_link_text() -> str:
 def _link_expired_text() -> str:
     v = _setting("env_LINK_EXPIRED_TEXT", LINK_EXPIRED_TEXT_DEFAULT)
     return _styled_plain(v)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  FILTER CAPTION BUILDER  — beautiful formatted caption for every filter
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _extract_season_number(title: str, anilist_data: Optional[Dict] = None) -> str:
+    """
+    Try to extract a season number from the title or AniList data.
+    Returns zero-padded string like "01", "02", "04".
+    """
+    # 1. Try 'S01', 'S 01', 'Season 1', 'Season 01' in title
+    m = re.search(r'\bS(?:eason)?\s*0*([1-9]\d*)\b', title, re.IGNORECASE)
+    if m:
+        return m.group(1).zfill(2)
+    # 2. AniList season: if sequel (title contains "2nd Season", "3rd Season" etc.)
+    if anilist_data:
+        relations = anilist_data.get("relations", {}).get("edges", [])
+        # Count how many prequels exist
+        prequels = sum(
+            1 for e in relations
+            if (e.get("relationType") or "").upper() in ("PREQUEL", "PARENT")
+        )
+        if prequels > 0:
+            return str(prequels + 1).zfill(2)
+    return "01"
+
+
+def _build_filter_caption(
+    title: str,
+    season: Optional[str] = None,
+    episodes: Optional[int] = None,
+    audio: Optional[str] = None,
+    quality: Optional[str] = None,
+    genres: Optional[str] = None,
+    has_hindi: bool = True,
+    anilist_data: Optional[Dict] = None,
+) -> str:
+    """
+    Build the formatted BeatAnime filter caption:
+
+    ╔══════════════════════╗
+       ║✦ Title ✦║
+    ╚══════════════════════╝
+    ┌─➤▰▰▰▰▰▰▰▰▰▰▰▰▰
+    ➤ sᴇᴀsᴏɴ : 01
+    ➤ ᴇᴘɪsᴏᴅᴇ : 24
+    ➤ ᴀᴜᴅɪᴏ : [ʜɪɴ] ᴅᴜʙ| #ᴏFFɪᴄɪᴀʟ ᴅᴜʙ
+    ➤ ǫᴜᴀʟɪᴛʏ 480p ,720p ,1080p
+    └─➤▰▰▰▰▰▰▰▰▰▰▰▰▰
+    BeatAnime | @Beat_Anime_Hindi_Dubbed
+    """
+    border = BEAT_FILTER_BORDER_CHAR * BEAT_FILTER_BORDER_COUNT
+    seas   = season or _extract_season_number(title, anilist_data)
+    ep     = str(episodes) if episodes else "?"
+    aud    = audio or (BEAT_DEFAULT_AUDIO if has_hindi else BEAT_DEFAULT_AUDIO_ENG)
+    qual   = quality or BEAT_DEFAULT_QUALITY
+    genres_line = (f"\n<i>» {html.escape(genres[:60])}</i>" if genres else "")
+
+    # Truncate title to fit within the box neatly
+    title_esc = html.escape(title[:28])
+
+    caption = (
+        f"<b>╔══════════════════════╗</b>\n"
+        f"<blockquote><b>   ║✦ {title_esc} ✦║</b></blockquote>\n"
+        f"<b>╚══════════════════════╝</b>\n"
+        f"<b>┌─➤{border}</b>\n"
+        f"<blockquote>"
+        f"<b>➤ sᴇᴀsᴏɴ : {seas}  </b>\n"
+        f"<b>➤ ᴇᴘɪsᴏᴅᴇ : {ep}  </b>\n"
+        f"<b>➤ ᴀᴜᴅɪᴏ : {aud} </b>\n"
+        f"<b>➤ ǫᴜᴀʟɪᴛʏ {qual}</b>"
+        f"</blockquote>\n"
+        f"<b>└─➤{border}</b>"
+        f"{genres_line}\n"
+        f"<b>{html.escape(BEAT_CHANNEL_NAME)}</b> | <code>{html.escape(BEAT_CHANNEL_HANDLE)}</code>"
+    )
+    if len(caption) > 1024:
+        caption = caption[:1020] + "…"
+    return caption
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  SEARCH ANALYTICS — /top command support
+#  Tracks searches per user, counted only ONCE per user per 2 weeks per title.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _ensure_search_analytics_tables() -> None:
+    """Create search analytics tables if they don't exist."""
+    try:
+        from database_dual import _pg_run
+        _pg_run("""
+            CREATE TABLE IF NOT EXISTS search_analytics (
+                anime_title TEXT NOT NULL,
+                user_id     BIGINT NOT NULL,
+                last_searched TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (anime_title, user_id)
+            )
+        """)
+    except Exception as exc:
+        logger.debug(f"search_analytics table create: {exc}")
+
+
+def record_filter_search(user_id: int, anime_title: str) -> None:
+    """
+    Record that user_id searched for anime_title.
+    A single user's search is counted at most ONCE per 2 weeks for the same title.
+    """
+    if not user_id or not anime_title:
+        return
+    key = anime_title.strip().lower()
+    try:
+        from database_dual import _pg_exec, _pg_run
+        from datetime import timedelta
+        _ensure_search_analytics_tables()
+        row = _pg_exec(
+            "SELECT last_searched FROM search_analytics WHERE anime_title = %s AND user_id = %s",
+            (key, user_id),
+        )
+        two_weeks_ago = datetime.utcnow() - timedelta(weeks=2)
+        if row and row[0] and row[0] >= two_weeks_ago:
+            return  # Already counted this user for this title within 2 weeks
+        _pg_run("""
+            INSERT INTO search_analytics (anime_title, user_id, last_searched)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (anime_title, user_id)
+            DO UPDATE SET last_searched = NOW()
+        """, (key, user_id))
+    except Exception as exc:
+        logger.debug(f"record_filter_search: {exc}")
+
+
+def get_top_filter_searches(limit: int = 10) -> List[Tuple[str, int]]:
+    """
+    Return top `limit` anime titles by unique-user search count.
+    Returns list of (title, count) tuples, sorted descending.
+    Combines both filter search analytics AND direct filter_poster_cache hits.
+    """
+    results: Dict[str, int] = {}
+    try:
+        from database_dual import _pg_exec_all
+        rows = _pg_exec_all(
+            "SELECT anime_title, COUNT(DISTINCT user_id) AS cnt "
+            "FROM search_analytics GROUP BY anime_title ORDER BY cnt DESC LIMIT %s",
+            (limit * 2,),
+        )
+        for row in (rows or []):
+            title = (row[0] or "").strip()
+            if title:
+                results[title] = int(row[1] or 0)
+    except Exception as exc:
+        logger.debug(f"get_top_filter_searches(analytics): {exc}")
+
+    # Also factor in filter_poster_cache hit counts (fallback / bonus data)
+    try:
+        from database_dual import _pg_exec_all
+        rows2 = _pg_exec_all(
+            "SELECT anime_title, COUNT(*) AS cnt "
+            "FROM filter_poster_cache GROUP BY anime_title ORDER BY cnt DESC LIMIT %s",
+            (limit * 2,),
+        )
+        for row in (rows2 or []):
+            title = (row[0] or "").strip().lower()
+            if title:
+                results[title] = results.get(title, 0) + int(row[1] or 0) // 2
+    except Exception:
+        pass
+
+    sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
+    return [(t.title(), c) for t, c in sorted_results[:limit]]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1179,26 +1381,68 @@ def _find_anime_in_db_sync(lower_text: str):
 #  PUBLIC ENTRY POINT — called from group_message_handler in bot.py
 # ═════════════════════════════════════════════════════════════════════════════
 
-async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def get_or_generate_poster(
+    update_or_bot: Any = None,
+    context: Any = None,
+    *,
+    bot: Any = None,
+    chat_id: int = 0,
+    title: str = "",
+    reply_to_message_id: Optional[int] = None,
+    auto_delete_seconds: int = 0,
+    link_expiry_minutes: int = 0,
+) -> None:
     """
-    Smart group filter handler:
+    Smart group filter handler.  Supports two calling conventions:
+
+    1. Handler form  (from add_handler):
+         get_or_generate_poster(update, context)
+
+    2. Direct form   (from group.py / alpha panel):
+         get_or_generate_poster(bot=bot, chat_id=..., title=..., ...)
+
       • Silently ignores messages that don't match an anime in the DB
-      • Single chars (≤1) are handled by alpha panel in group.py
       • On match: serves from poster cache OR generates new poster (no loading msg)
       • Invite link created CONCURRENTLY with poster to save time
       • "Not yet added" message if anime found in DB but no AniList data
       • Hindi dub unavailable message if user asks for Hindi but it isn't there
+      • Tracks search analytics for /top command
     """
-    if not update.message or not update.message.text:
+    # ── Resolve arguments ─────────────────────────────────────────────────────
+    _update = None
+    _text   = title
+
+    if update_or_bot is not None and hasattr(update_or_bot, "message"):
+        # Called as update handler
+        _update = update_or_bot
+        if not _update.message or not _update.message.text:
+            return
+        _bot     = context.bot
+        chat_id  = _update.effective_chat.id
+        _text    = _update.message.text.strip()
+        reply_to_message_id = _update.message.message_id
+        if not auto_delete_seconds:
+            auto_delete_seconds = get_auto_delete_seconds(chat_id)
+        if not link_expiry_minutes:
+            link_expiry_minutes = get_link_expiry_minutes(chat_id)
+    elif bot is not None:
+        # Called with explicit kwargs
+        _bot = bot
+        if not auto_delete_seconds:
+            auto_delete_seconds = get_auto_delete_seconds(chat_id)
+        if not link_expiry_minutes:
+            link_expiry_minutes = get_link_expiry_minutes(chat_id)
+    else:
         return
 
-    text = update.message.text.strip()
-    chat_id = update.effective_chat.id
-    reply_to = update.message.message_id
+    reply_to = reply_to_message_id
 
     # Skip commands, single chars (alpha-panel handles those), too long/short
-    if not text or text.startswith('/') or len(text) > 100 or len(text) <= 1:
-        return
+    if not _text or _text.startswith('/') or len(_text) > 100 or len(_text) <= 1:
+        # When called directly with title, skip the length check
+        if not title or len(title) <= 1:
+            return
+        _text = title
 
     if not get_filter_poster_enabled(chat_id):
         return
@@ -1206,9 +1450,9 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     # Normalize Unicode-styled text (small caps, math bold, full-width etc.)
     try:
         from core.chatbot_engine import normalize_text as _normalize
-        lower = _normalize(text)
+        lower = _normalize(_text)
     except Exception:
-        lower = text.lower()
+        lower = _text.lower()
     loop = asyncio.get_event_loop()
 
     # ── Step 1: DB lookup — MUST match an anime title first ────────────────
@@ -1218,10 +1462,9 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
 
     if not matched_anime:
         # Special case: user explicitly asked for hindi dub of something not in DB
-        # Show a "we don't have it but you can request" message
         _hindi_kw = any(kw in lower for kw in ('hindi', ' hin ', 'hindi dub', 'dubbed', 'hindi dubbed'))
         if _hindi_kw and len(lower.strip()) >= 4:
-            _req_name = text.strip()
+            _req_name = _text.strip()
             try:
                 _req_kb = InlineKeyboardMarkup([[
                     InlineKeyboardButton(
@@ -1229,7 +1472,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                         callback_data=f"request_hindi:{_req_name[:46]}",
                     )
                 ]])
-                _req_msg = await context.bot.send_message(
+                _req_msg = await _bot.send_message(
                     chat_id=chat_id,
                     text=(
                         "<b>" + _styled(html.escape(_req_name)) + "</b>\n\n"
@@ -1242,17 +1485,28 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                     disable_web_page_preview=True,
                 )
                 if _req_msg:
-                    asyncio.create_task(_auto_delete(context.bot, chat_id, _req_msg.message_id, delay=90))
+                    asyncio.create_task(_auto_delete(_bot, chat_id, _req_msg.message_id, delay=90))
             except Exception:
                 pass
         return  # Not an anime name → silent
 
-    bot = context.bot
-    template = get_filter_template(chat_id)
-    auto_delete = get_auto_delete_seconds(chat_id)
-    link_exp = get_link_expiry_minutes(chat_id)
+    # ── Track search analytics ─────────────────────────────────────────────
+    try:
+        if _update and _update.effective_user:
+            _uid = _update.effective_user.id
+        else:
+            # Called directly — no user info; skip analytics silently
+            _uid = 0
+        if _uid:
+            loop.run_in_executor(None, record_filter_search, _uid, matched_anime)
+    except Exception:
+        pass
 
-    # ── Step 2: Check poster cache (file_id reuse, zero PIL cost) ──────────
+    template    = get_filter_template(chat_id)
+    auto_delete = auto_delete_seconds
+    link_exp    = link_expiry_minutes
+
+    # ── Step 2: Check poster cache ─────────────────────────────────────────
     import hashlib as _hl
     cache_key = _hl.md5(f"{matched_anime.lower()}:{template}".encode()).hexdigest()
 
@@ -1274,7 +1528,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
             cid = matched_channel_id
         expire_ts = int(time.time()) + (link_exp * 60)
         try:
-            inv = await bot.create_chat_invite_link(
+            inv = await _bot.create_chat_invite_link(
                 chat_id=cid, expire_date=expire_ts, member_limit=1,
                 creates_join_request=False, name=f"FP-{int(time.time())}",
             )
@@ -1287,13 +1541,13 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                _setting("env_join_btn_text", "") or JOIN_BTN_TEXT_DEFAULT)
     join_text = _styled_plain(raw_btn)
 
-    # ── Serve from cache + fresh invite link (fastest path) ───────────────
+    # ── Serve from cache + fresh invite link ──────────────────────────────
     if cached and cached.get("file_id"):
         try:
-            join_url = await _make_channel_invite() or PUBLIC_URL
+            join_url    = await _make_channel_invite() or PUBLIC_URL
             delete_delay = link_exp * 60 if join_url != PUBLIC_URL else auto_delete
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(join_text, url=join_url)]])
-            sent = await bot.send_photo(
+            sent = await _bot.send_photo(
                 chat_id=chat_id,
                 photo=cached["file_id"],
                 caption=cached.get("caption", ""),
@@ -1302,7 +1556,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 reply_to_message_id=reply_to,
             )
             if sent and delete_delay > 0:
-                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
+                asyncio.create_task(_auto_delete(_bot, chat_id, sent.message_id, delay=delete_delay))
             return
         except Exception:
             pass  # Expired file_id → fall through to regenerate
@@ -1315,7 +1569,6 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             return None
 
-    # Both tasks run simultaneously → faster than sequential
     join_url_res, data = await asyncio.gather(
         _make_channel_invite(),
         _fetch_anime_data_async(),
@@ -1340,7 +1593,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
             )
         ]])
         try:
-            sent = await bot.send_message(
+            sent = await _bot.send_message(
                 chat_id=chat_id,
                 text=not_found_text,
                 parse_mode="HTML",
@@ -1349,7 +1602,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 disable_web_page_preview=True,
             )
             if sent and delete_delay > 0:
-                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
+                asyncio.create_task(_auto_delete(_bot, chat_id, sent.message_id, delay=delete_delay))
         except Exception:
             pass
         return
@@ -1370,7 +1623,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
             ),
         ]])
         try:
-            sent = await bot.send_message(
+            sent = await _bot.send_message(
                 chat_id=chat_id,
                 text=hindi_text,
                 parse_mode="HTML",
@@ -1379,12 +1632,12 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 disable_web_page_preview=True,
             )
             if sent and delete_delay > 0:
-                asyncio.create_task(_auto_delete(bot, chat_id, sent.message_id, delay=delete_delay))
+                asyncio.create_task(_auto_delete(_bot, chat_id, sent.message_id, delay=delete_delay))
         except Exception:
             pass
         return
 
-    # ── Step 5: Build poster (no loading placeholder) ──────────────────────
+    # ── Step 5: Build poster ───────────────────────────────────────────────
     try:
         from poster_engine import _build_anime_data, _make_poster, _get_settings
         settings = _get_settings("anime")
@@ -1393,8 +1646,26 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         settings = {}
 
     poster_buf = None
-    caption = f"<b>{html.escape(matched_anime)}</b>"
-    site_url = ""
+    site_url   = ""
+
+    # Build the new formatted caption
+    try:
+        t_d      = data.get("title", {}) or {}
+        eng      = t_d.get("english") or t_d.get("romaji") or matched_anime
+        genres   = ", ".join((data.get("genres") or [])[:3])
+        episodes = data.get("episodes")
+        site_url = data.get("siteUrl", "")
+
+        caption = _build_filter_caption(
+            title=eng,
+            episodes=episodes,
+            genres=genres,
+            has_hindi=has_hindi,
+            anilist_data=data,
+        )
+    except Exception as be:
+        logger.debug(f"[filter] caption build: {be}")
+        caption = f"<b>{html.escape(matched_anime)}</b>"
 
     try:
         title_b, native, st, rows, desc, cover_url, score = await loop.run_in_executor(
@@ -1411,21 +1682,24 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 None, "bottom",
             ),
         )
-        site_url = data.get("siteUrl", "")
-        t_d = data.get("title", {}) or {}
-        eng = t_d.get("english") or t_d.get("romaji") or matched_anime
-        genres = ", ".join((data.get("genres") or [])[:3])
-        caption = (
-            f"<b>{_here_link_text()}</b>\n"
-            f"<i>{HERE_LINK_NOTE_DEFAULT}</i>\n\n"
-            f"<b>{html.escape(eng)}</b>"
-        )
-        if native:
-            caption += f"\n<i>{html.escape(native)}</i>"
-        if genres:
-            caption += f"\n\n» <b>{_styled_plain('Genre')}:</b> {_styled(html.escape(genres))}"
-        if len(caption) > 1024:
-            caption = caption[:1020] + "…"
+        # Apply watermark layers (sticker/logo overlay)
+        if poster_buf and PIL_OK:
+            try:
+                poster_buf.seek(0)
+                base_img = await loop.run_in_executor(
+                    None, lambda: Image.open(poster_buf).convert("RGBA")
+                )
+                final_img = await apply_watermark_layers(base_img, chat_id, bot=_bot)
+                out = BytesIO()
+                await loop.run_in_executor(
+                    None, lambda: final_img.convert("RGB").save(out, format="JPEG", quality=92)
+                )
+                out.seek(0)
+                out.name = f"poster_{template}_{matched_anime[:20].replace(' ', '_')}.jpg"
+                poster_buf = out
+            except Exception as we:
+                logger.debug(f"[filter] watermark: {we}")
+                poster_buf.seek(0)
     except Exception as be:
         logger.debug(f"[filter] poster build: {be}")
 
@@ -1442,7 +1716,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     if POSTER_DB_CHANNEL and poster_buf:
         try:
             poster_buf.seek(0)
-            db_msg = await bot.send_photo(
+            db_msg = await _bot.send_photo(
                 chat_id=POSTER_DB_CHANNEL,
                 photo=poster_buf,
                 caption=f"FilterPoster | {matched_anime} | {template}",
@@ -1455,7 +1729,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     if poster_buf:
         try:
             poster_buf.seek(0)
-            sent_msg = await bot.send_photo(
+            sent_msg = await _bot.send_photo(
                 chat_id=chat_id,
                 photo=file_id_to_cache or poster_buf,
                 caption=caption,
@@ -1477,7 +1751,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         )
         if cover_direct:
             try:
-                sent_msg = await bot.send_photo(
+                sent_msg = await _bot.send_photo(
                     chat_id=chat_id,
                     photo=cover_direct,
                     caption=caption,
@@ -1493,7 +1767,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     # Final text fallback
     if not sent_msg:
         try:
-            sent_msg = await bot.send_message(
+            sent_msg = await _bot.send_message(
                 chat_id=chat_id,
                 text=caption,
                 parse_mode="HTML",
@@ -1504,7 +1778,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             pass
 
-    # Persist cache so next request for same anime is instant
+    # Persist cache
     if file_id_to_cache and _save_cache_fn:
         try:
             _save_cache_fn(
@@ -1519,7 +1793,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
     if sent_msg and delete_delay > 0:
-        asyncio.create_task(_auto_delete(bot, chat_id, sent_msg.message_id, delay=delete_delay))
+        asyncio.create_task(_auto_delete(_bot, chat_id, sent_msg.message_id, delay=delete_delay))
 
 
 async def _get_or_generate_poster_internal(
@@ -1623,23 +1897,19 @@ def build_filter_poster_settings_keyboard(chat_id: int = 0) -> Any:
     template = get_filter_template(chat_id)
 
     def _b(label: str, cb: str) -> InlineKeyboardButton:
-        # Try to use bot's styling function if available, otherwise plain text
         try:
             from bot import _style_label
             return InlineKeyboardButton(_style_label(label), callback_data=cb)
         except Exception:
             return InlineKeyboardButton(label, callback_data=cb)
 
-    tmpl_row1 = [
-        _b("ani",   f"fp_tmpl_{chat_id}_ani"),
-        _b("crun",  f"fp_tmpl_{chat_id}_crun"),
-        _b("net",   f"fp_tmpl_{chat_id}_net")
-    ]
-    tmpl_row2 = [
-        _b("dark",  f"fp_tmpl_{chat_id}_dark"),
-        _b("light", f"fp_tmpl_{chat_id}_light"),
-        _b("mod",   f"fp_tmpl_{chat_id}_mod")
-    ]
+    def _tb(tmpl_name: str) -> InlineKeyboardButton:
+        """Template button — show ✅ on current active template."""
+        mark = "✅ " if template == tmpl_name else ""
+        return _b(f"{mark}{tmpl_name}", f"fp_tmpl_{chat_id}_{tmpl_name}")
+
+    tmpl_row1 = [_tb("ani"),  _tb("crun"), _tb("net")]
+    tmpl_row2 = [_tb("dark"), _tb("light"), _tb("mod")]
 
     mode_label = "MODE: POSTER" if mode == "poster" else "MODE: TEXT"
 
