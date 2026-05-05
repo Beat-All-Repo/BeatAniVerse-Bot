@@ -1052,11 +1052,14 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
             cid = int(matched_channel_id)
         except (ValueError, TypeError):
             cid = matched_channel_id
-        expire_ts = int(time.time()) + (link_exp * 60)
         try:
+            # No expiry (expire_date=None), no member limit = permanent link
             inv = await bot.create_chat_invite_link(
-                chat_id=cid, expire_date=expire_ts, member_limit=1,
-                creates_join_request=False, name=f"FP-{int(time.time())}",
+                chat_id=cid,
+                expire_date=None,
+                member_limit=None,
+                creates_join_request=False,
+                name=f"Filter-{matched_anime[:20]}",
             )
             return inv.invite_link
         except Exception as exc:
@@ -1069,7 +1072,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     if cached and cached.get("file_id"):
         try:
             join_url     = await _make_channel_invite() or PUBLIC_URL
-            delete_delay = link_exp * 60 if join_url != PUBLIC_URL else auto_delete_secs
+            delete_delay = auto_delete_secs
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(join_text, url=join_url)]])
             sent = await bot.send_photo(chat_id=chat_id, photo=cached["file_id"],
                                          caption=cached.get("caption", ""), parse_mode="HTML",
@@ -1091,7 +1094,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         _make_channel_invite(), _fetch_anime_data_async(), return_exceptions=True)
     join_url     = join_url_res if isinstance(join_url_res, str) and join_url_res else PUBLIC_URL
     data         = data if isinstance(data, dict) else None
-    delete_delay = link_exp * 60 if join_url != PUBLIC_URL else auto_delete_secs
+    delete_delay = auto_delete_secs
 
     if not data:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
