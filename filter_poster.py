@@ -675,9 +675,43 @@ async def _save_to_poster_channel(bot: Any, photo_buf: BytesIO, caption: str,
 #  MODE 1 — TEXT DELIVERY
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _make_channel_invite_link(bot: Any, channel_id: Any,
+                                     expiry_minutes: int) -> Optional[str]:
+    """
+    Create invite link for a specific channel.
+    expiry_minutes=0 → permanent (no expiry, no member limit).
+    Falls back to _make_expirable_link (force-sub) if channel_id is None.
+    """
+    if not channel_id:
+        return await _make_expirable_link(bot, expiry_minutes)
+    try:
+        cid = int(channel_id)
+    except (ValueError, TypeError):
+        cid = channel_id
+    try:
+        if expiry_minutes == 0:
+            inv = await bot.create_chat_invite_link(
+                chat_id=cid, expire_date=None, member_limit=None,
+                creates_join_request=False, name="Filter",
+            )
+        else:
+            inv = await bot.create_chat_invite_link(
+                chat_id=cid,
+                expire_date=int(time.time()) + (expiry_minutes * 60),
+                member_limit=1,
+                creates_join_request=False,
+                name=f"FP-{int(time.time())}",
+            )
+        return inv.invite_link
+    except Exception as exc:
+        logger.debug(f"_make_channel_invite_link {cid}: {exc}")
+        return await _make_expirable_link(bot, expiry_minutes)
+
+
 async def _deliver_text_mode(bot: Any, chat_id: int, title: str, reply_to: Optional[int],
-                               expiry_minutes: int, auto_delete_seconds: int) -> bool:
-    join_url  = await _make_expirable_link(bot, expiry_minutes) or PUBLIC_URL
+                               expiry_minutes: int, auto_delete_seconds: int,
+                               channel_id: Any = None) -> bool:
+    join_url  = await _make_channel_invite_link(bot, channel_id, expiry_minutes) or PUBLIC_URL
     join_text = _join_btn_text()
     text = (
         f"<b>{html.escape(_here_link_text())}</b>\n"
@@ -702,11 +736,12 @@ async def _deliver_text_mode(bot: Any, chat_id: int, title: str, reply_to: Optio
 
 async def _deliver_poster_mode(bot: Any, chat_id: int, title: str, template: str,
                                  media_type: str, reply_to: Optional[int],
-                                 expiry_minutes: int, auto_delete_seconds: int) -> bool:
+                                 expiry_minutes: int, auto_delete_seconds: int,
+                                 channel_id: Any = None) -> bool:
     cached = _get_cached_poster(title, template)
     if cached and cached.get("file_id"):
         try:
-            join_url  = await _make_expirable_link(bot, expiry_minutes) or PUBLIC_URL
+            join_url  = await _make_channel_invite_link(bot, channel_id, expiry_minutes) or PUBLIC_URL
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(_join_btn_text(), url=join_url)]])
             msg = await bot.send_photo(chat_id=chat_id, photo=cached["file_id"],
                                         caption=cached.get("caption", ""), parse_mode="HTML",
@@ -726,7 +761,7 @@ async def _deliver_poster_mode(bot: Any, chat_id: int, title: str, template: str
         return False
     if not (poster_buf or data):
         return False
-    join_url  = await _make_expirable_link(bot, expiry_minutes) or PUBLIC_URL
+    join_url  = await _make_channel_invite_link(bot, channel_id, expiry_minutes) or PUBLIC_URL
     site_url  = (data or {}).get("siteUrl", "")
     btns = [[InlineKeyboardButton(_join_btn_text(), url=join_url)]]
     if site_url:
@@ -1028,7 +1063,11 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 pass
         return
 
-    # Confirmed match — build and send poster
+    # Confirmed match — delete user's trigger message, build and send poster
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=reply_to)
+    except Exception:
+        pass
     bot             = context.bot
     template        = get_filter_template(chat_id)
     auto_delete_secs = get_auto_delete_seconds(chat_id)
@@ -1053,14 +1092,24 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         except (ValueError, TypeError):
             cid = matched_channel_id
         try:
-            # No expiry (expire_date=None), no member limit = permanent link
-            inv = await bot.create_chat_invite_link(
-                chat_id=cid,
-                expire_date=None,
-                member_limit=None,
-                creates_join_request=False,
-                name=f"Filter-{matched_anime[:20]}",
-            )
+            if link_exp == 0:
+                # Permanent link — no expiry, no member limit
+                inv = await bot.create_chat_invite_link(
+                    chat_id=cid,
+                    expire_date=None,
+                    member_limit=None,
+                    creates_join_request=False,
+                    name=f"Filter-{matched_anime[:20]}",
+                )
+            else:
+                # Expiring link as per setting
+                inv = await bot.create_chat_invite_link(
+                    chat_id=cid,
+                    expire_date=int(time.time()) + (link_exp * 60),
+                    member_limit=1,
+                    creates_join_request=False,
+                    name=f"FP-{int(time.time())}",
+                )
             return inv.invite_link
         except Exception as exc:
             logger.debug(f"[filter] invite link for {cid}: {exc}")
@@ -1072,7 +1121,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
     if cached and cached.get("file_id"):
         try:
             join_url     = await _make_channel_invite() or PUBLIC_URL
-            delete_delay = auto_delete_secs
+            delete_delay = (link_exp * 60) if link_exp > 0 else auto_delete_secs
             kb = InlineKeyboardMarkup([[InlineKeyboardButton(join_text, url=join_url)]])
             sent = await bot.send_photo(chat_id=chat_id, photo=cached["file_id"],
                                          caption=cached.get("caption", ""), parse_mode="HTML",
@@ -1094,7 +1143,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         _make_channel_invite(), _fetch_anime_data_async(), return_exceptions=True)
     join_url     = join_url_res if isinstance(join_url_res, str) and join_url_res else PUBLIC_URL
     data         = data if isinstance(data, dict) else None
-    delete_delay = auto_delete_secs
+    delete_delay = (link_exp * 60) if link_exp > 0 else auto_delete_secs
 
     if not data:
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
@@ -1431,17 +1480,25 @@ async def index_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             pass
 
-        # Look up and fire poster
-        matched_anime, *_ = await loop.run_in_executor(
+        # Delete the user's trigger message (the letter they typed)
+        try:
+            await query.message.reply_to_message.delete()
+        except Exception:
+            pass
+
+        # Look up full DB row to get the matched channel_id
+        matched_anime, matched_channel_id, matched_link_id, has_hindi = await loop.run_in_executor(
             None, _find_anime_in_db_sync, anime_title.lower()
         )
         if not matched_anime:
-            matched_anime = anime_title  # use as-is, poster engine will try AniList
+            matched_anime      = anime_title
+            matched_channel_id = None
 
         await _get_or_generate_poster_internal(
             bot=context.bot,
             chat_id=chat_id,
             title=matched_anime,
+            channel_id=matched_channel_id,
             template=get_filter_template(chat_id),
             media_type="ANIME",
             reply_to_message_id=None,
@@ -1481,16 +1538,19 @@ async def filter_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             pass
 
         loop = asyncio.get_event_loop()
-        matched_anime, *_ = await loop.run_in_executor(None, _find_anime_in_db_sync, anime_title)
+        matched_anime, matched_channel_id, _, __ = await loop.run_in_executor(
+            None, _find_anime_in_db_sync, anime_title)
         if not matched_anime:
             hits = await loop.run_in_executor(None, _find_anime_by_prefix_sync, anime_title)
-            matched_anime = hits[0][0] if hits else None
+            if hits:
+                matched_anime, matched_channel_id = hits[0][0], hits[0][1]
 
         if not matched_anime:
             return
 
         await _get_or_generate_poster_internal(
             bot=context.bot, chat_id=chat_id, title=matched_anime,
+            channel_id=matched_channel_id,
             template=get_filter_template(chat_id), media_type="ANIME",
             reply_to_message_id=None,
             auto_delete_seconds=get_auto_delete_seconds(chat_id),
@@ -1506,17 +1566,20 @@ async def _get_or_generate_poster_internal(
     bot: Any, chat_id: int, title: str, template: str = "ani",
     media_type: str = "ANIME", reply_to_message_id: Optional[int] = None,
     auto_delete_seconds: int = 300, link_expiry_minutes: int = 5,
+    channel_id: Optional[int] = None,
 ) -> bool:
     if get_filter_mode(chat_id) == "text":
         return await _deliver_text_mode(bot=bot, chat_id=chat_id, title=title,
                                          reply_to=reply_to_message_id,
                                          expiry_minutes=link_expiry_minutes,
-                                         auto_delete_seconds=auto_delete_seconds)
+                                         auto_delete_seconds=auto_delete_seconds,
+                                         channel_id=channel_id)
     return await _deliver_poster_mode(bot=bot, chat_id=chat_id, title=title,
                                        template=template, media_type=media_type,
                                        reply_to=reply_to_message_id,
                                        expiry_minutes=link_expiry_minutes,
-                                       auto_delete_seconds=auto_delete_seconds)
+                                       auto_delete_seconds=auto_delete_seconds,
+                                       channel_id=channel_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
