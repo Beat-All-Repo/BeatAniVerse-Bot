@@ -1,7 +1,3 @@
-# ====================================================================
-# PLACE AT: /app/modules/anime.py
-# ACTION: Replace existing file
-# ====================================================================
 """
 anime.py — /anime /tvshow /net /manga /airing /character /imdb
 Fully async, works for all users.
@@ -1208,7 +1204,7 @@ async def _thumbnail_photo_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     """User sends a photo to use as custom thumbnail."""
-    if not context.user_data.get("awaiting_thumbnail"):
+    if not (context.user_data or {}).get("awaiting_thumbnail"):
         return
     msg = update.message
     if not msg or not msg.photo:
