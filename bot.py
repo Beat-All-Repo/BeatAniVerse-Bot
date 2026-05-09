@@ -140,6 +140,16 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("addpanelimg",    addpanelimg_command))
     app.add_handler(CommandHandler("getfileid",      getfileid_command))
 
+    # ── Auto-approve admin commands (ported from BCJ bot) ─────────────────────
+    from handlers.channels import (
+        cmd_reqtime, cmd_reqmode, cmd_approveoff, cmd_approveon, cmd_approve_status,
+    )
+    app.add_handler(CommandHandler("reqtime",       cmd_reqtime,       filters=admin_filter))
+    app.add_handler(CommandHandler("reqmode",       cmd_reqmode,       filters=admin_filter))
+    app.add_handler(CommandHandler("approveoff",    cmd_approveoff,    filters=admin_filter))
+    app.add_handler(CommandHandler("approveon",     cmd_approveon,     filters=admin_filter))
+    app.add_handler(CommandHandler("approvestatus", cmd_approve_status, filters=admin_filter))
+
     # ── Poster template commands (admin only) ─────────────────────────────────
     try:
         from poster_engine import (
