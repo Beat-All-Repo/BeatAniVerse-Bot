@@ -3,8 +3,14 @@ handlers/start.py
 =================
 /start command, deep link handling, welcome screen,
 loading animation, safety anchor system.
+
+PATCH: Invite link caching — one Telegram API call per channel per 4 min
+       instead of one per user. Uses per-channel asyncio.Lock to prevent
+       duplicate concurrent creation.  member_limit removed so a single
+       link can be reused by many users within its TTL.
 """
 import asyncio
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional, Any
 
@@ -33,6 +39,40 @@ from core.state_machine import user_states, _safety_anchors
 from core.filters_system import force_sub_required
 from core.panel_store import _deliver_panel
 from core.logging_setup import logger
+
+
+# ── Invite-link cache (the speed fix) ────────────────────────────────────────
+# Structure: channel_id (int) -> {"link": str, "created_at": datetime, "jbr": bool}
+_invite_link_cache: dict = {}
+
+# Per-channel lock so two simultaneous requests don't both call Telegram API
+_channel_locks: dict = defaultdict(asyncio.Lock)
+
+# How long (seconds) a cached link is reused before refreshing (~4 minutes)
+_LINK_CACHE_TTL = 240
+
+
+def _get_cached_invite(channel_id: int, jbr_mode: bool):
+    """Return a still-valid cached Telegram invite link, or None."""
+    entry = _invite_link_cache.get(channel_id)
+    if not entry:
+        return None
+    if entry.get("jbr") != jbr_mode:
+        # Mode changed — force refresh
+        return None
+    age = (datetime.utcnow() - entry["created_at"]).total_seconds()
+    if age < _LINK_CACHE_TTL:
+        return entry["link"]
+    return None
+
+
+def _store_cached_invite(channel_id: int, link: str, jbr_mode: bool) -> None:
+    """Store a freshly created invite link in cache."""
+    _invite_link_cache[channel_id] = {
+        "link": link,
+        "created_at": datetime.utcnow(),
+        "jbr": jbr_mode,
+    }
 
 
 # ── Loading animation ─────────────────────────────────────────────────────────
@@ -431,7 +471,15 @@ async def handle_deep_link(
     context: ContextTypes.DEFAULT_TYPE,
     link_id: str,
 ) -> None:
-    """Handle deep link /start?start=<link_id>."""
+    """
+    Handle deep link /start?start=<link_id>.
+
+    SPEED FIX: Telegram invite links are now cached per channel for
+    _LINK_CACHE_TTL seconds.  A per-channel asyncio.Lock prevents
+    concurrent duplicate API calls when many users tap a post at once.
+    member_limit is removed so the same link can be delivered to multiple
+    users without being single-use.
+    """
     from core.text_utils import now_utc
     chat_id = update.effective_chat.id
 
@@ -483,23 +531,46 @@ async def handle_deep_link(
 
     try:
         if isinstance(channel_identifier, str) and channel_identifier.lstrip("-").isdigit():
-            channel_identifier = int(channel_identifier)
+            channel_id = int(channel_identifier)
+        else:
+            channel_id = channel_identifier
 
-        chat = await invite_bot.get_chat(channel_identifier)
-        expire_ts = int(
-            (now_utc() + timedelta(minutes=LINK_EXPIRY_MINUTES + 1)).timestamp()
-        )
-        _ch_info = get_force_sub_channel_info(str(chat.id))
+        # ── Determine join-by-request mode for this channel ───────────────────
+        _ch_info = get_force_sub_channel_info(str(channel_id))
         _jbr_mode = bool(_ch_info and _ch_info[2]) if _ch_info else False
 
-        invite = await invite_bot.create_chat_invite_link(
-            chat.id,
-            expire_date=expire_ts,
-            member_limit=1,
-            name=f"DeepLink {link_id[:8]}",
-            creates_join_request=_jbr_mode,
-        )
+        # ── Fast path: serve cached invite link ───────────────────────────────
+        cached_link = _get_cached_invite(channel_id, _jbr_mode)
+        if cached_link:
+            invite_link = cached_link
+            logger.debug(f"[deeplink] cache HIT for channel {channel_id}")
+        else:
+            # ── Slow path (one API call per channel per TTL window) ───────────
+            async with _channel_locks[channel_id]:
+                # Double-check after acquiring lock — another coroutine may
+                # have just populated the cache while we were waiting.
+                cached_link = _get_cached_invite(channel_id, _jbr_mode)
+                if cached_link:
+                    invite_link = cached_link
+                    logger.debug(f"[deeplink] cache HIT (post-lock) for channel {channel_id}")
+                else:
+                    logger.debug(f"[deeplink] cache MISS — creating new invite for channel {channel_id}")
+                    chat = await invite_bot.get_chat(channel_id)
+                    expire_ts = int(
+                        (now_utc() + timedelta(minutes=LINK_EXPIRY_MINUTES + 1)).timestamp()
+                    )
+                    invite = await invite_bot.create_chat_invite_link(
+                        chat.id,
+                        expire_date=expire_ts,
+                        # No member_limit=1 — allows the same link to be reused
+                        # by multiple users during the cache TTL window.
+                        name=f"DeepLink {link_id[:8]}",
+                        creates_join_request=_jbr_mode,
+                    )
+                    invite_link = invite.invite_link
+                    _store_cached_invite(channel_id, invite_link, _jbr_mode)
 
+        # ── Build and send the response message ───────────────────────────────
         try:
             from database_dual import get_setting
             _here_link = get_setting("env_HERE_IS_LINK_TEXT", HERE_IS_LINK_TEXT) or HERE_IS_LINK_TEXT
@@ -519,7 +590,7 @@ async def handle_deep_link(
         if _jbr_note:
             _link_msg += "\n" + _jbr_note
 
-        keyboard = [[bold_button(small_caps(_join_text), url=invite.invite_link)]]
+        keyboard = [[bold_button(small_caps(_join_text), url=invite_link)]]
         await context.bot.send_message(
             chat_id, _link_msg,
             parse_mode=ParseMode.HTML,
