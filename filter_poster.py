@@ -261,7 +261,7 @@ def set_filter_poster_enabled(chat_id: int, enabled: bool) -> None:
     _set(f"filter_poster_enabled_{chat_id}", "true" if enabled else "false")
 
 def get_filter_template(chat_id: int) -> str:
-    return _setting(f"filter_poster_template_{chat_id}", "ani")
+    return _setting(f"filter_poster_template_{chat_id}", "stream")
 
 def set_filter_template(chat_id: int, template: str) -> None:
     _set(f"filter_poster_template_{chat_id}", template)
@@ -296,12 +296,15 @@ def _default_wm_c() -> dict:
     import os as _os
     _candidates = [
         _os.path.join(_os.path.dirname(__file__), "assets", "channel_logo.webp"),
+        _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "assets", "channel_logo.webp"),
         "/app/assets/channel_logo.webp",
         _os.path.join(_os.getcwd(), "assets", "channel_logo.webp"),
     ]
     _logo_path = next((p for p in _candidates if _os.path.exists(p)), "")
+    # Always enabled=True: the block in apply_watermark_layers is always entered
+    # so the fallback scan can also pick up the asset at runtime.
     _local_url = f"file://{_logo_path}" if _logo_path else ""
-    return {"enabled": bool(_logo_path), "file_id": "", "url": _local_url,
+    return {"enabled": True, "file_id": "", "url": _local_url,
             "position": "bottom-left", "scale": 0.10, "opacity": 230}
 
 def get_wm_layer(chat_id: int, layer: str) -> dict:
@@ -578,12 +581,79 @@ async def apply_watermark_layers(img: Any, chat_id: int, bot: Any = None) -> Any
             url = lc.get("url", "")
             if url:
                 overlay_img = _load_image_from_url(url)
+        # Hard fallback: scan known asset paths so sticker always renders
+        if overlay_img is None:
+            _asset_candidates = [
+                os.path.join(_BASE, "assets", "channel_logo.webp"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "channel_logo.webp"),
+                "/app/assets/channel_logo.webp",
+                os.path.join(os.getcwd(), "assets", "channel_logo.webp"),
+            ]
+            for _apath in _asset_candidates:
+                if os.path.exists(_apath):
+                    overlay_img = _load_image_from_path(_apath)
+                    if overlay_img:
+                        break
         if overlay_img:
             img = _apply_image_watermark_layer(img, overlay=overlay_img,
                 position=lc.get("position", "bottom-left"),
-                scale=float(lc.get("scale", 0.12)),
-                opacity=int(lc.get("opacity", 220)))
+                scale=float(lc.get("scale", 0.10)),
+                opacity=int(lc.get("opacity", 230)))
     return img
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  FILTER CAPTION BUILDER
+#  Builds the styled info caption shown on both direct & index-selected posters
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_filter_caption(anime_title: str, data: Optional[Dict] = None) -> str:
+    """
+    Returns HTML caption in the channel-info box style:
+
+    ╔══════════════════════╗
+      ║✦ ANIME NAME ✦║
+    ╚══════════════════════╝
+    ┌─➤▰▰▰▰▰▰▰▰▰▰▰▰▰
+      ➤ sᴇᴀsᴏɴ : 01
+      ➤ ᴇᴘɪsᴏᴅᴇ : N
+      ➤ ᴀᴜᴅɪᴏ : [ʜɪɴ] ᴅᴜʙ| #ᴏғғɪᴄɪᴀʟ ᴅᴜʙ
+      ➤ ǫᴜᴀʟɪᴛʏ 480p ,720p ,1080p
+    └─➤▰▰▰▰▰▰▰▰▰▰▰▰▰
+    """
+    # Anime name in small caps
+    name_sc = _to_sc(anime_title.upper()) if anime_title else "???"
+
+    # Total episodes from AniList data, fall back to "?"
+    total_ep = "?"
+    if data:
+        ep_val = data.get("episodes")
+        if ep_val and str(ep_val) not in ("None", "0", ""):
+            total_ep = str(ep_val)
+
+    bar   = "▰▰▰▰▰▰▰▰▰▰▰▰▰"
+    fence = "══════════════════════"
+
+    caption = (
+        f"<b>╔{fence}╗</b>"
+        f"\n<blockquote><b> ║✦ {html.escape(name_sc)} ✦║</b></blockquote>"
+        f"<b>╚{fence}╝</b>"
+        f"\n<b>┌─➤{bar}</b>"
+        f"\n<blockquote>"
+        f"<b>➤ sᴇᴀsᴏɴ : 01 </b>\n"
+        f"<b>➤ ᴇᴘɪsᴏᴅᴇ : {total_ep} </b>\n"
+        f"<b>➤ ᴀᴜᴅɪᴏ : [ʜɪɴ] ᴅᴜʙ| #ᴏғғɪᴄɪᴀʟ ᴅᴜʙ </b>\n"
+        f"<b>➤ ǫᴜᴀʟɪᴛʏ 480p ,720p ,1080p</b>"
+        f"</blockquote>"
+        f"<b>└─➤{bar}</b>"
+    )
+
+    # Apply global small-caps style if enabled (skip HTML tags)
+    if _get_global_style() == "smallcaps":
+        caption = _styled(caption)
+
+    if len(caption) > 1024:
+        caption = caption[:1020] + "…"
+    return caption
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  DATA FETCHING
@@ -634,19 +704,10 @@ async def _generate_poster_data(title: str, template: str, media_type: str,
             poster_buf.seek(0)
     genres_str = ", ".join((data.get("genres") or [])[:4])
     branding   = settings.get("branding", "")
-    info_html  = ""
-    for label, value in (p_rows or [])[:5]:
-        if value and str(value) not in ("-", "N/A", "None", "?", "0"):
-            info_html += f"<b>{_styled_plain(label)}:</b> {_styled(html.escape(str(value)))}\n"
-    caption_raw = (
-        f"<b>{html.escape(p_title)}</b>\n"
-        + (f"<i>{_styled(html.escape(genres_str))}</i>\n" if genres_str else "")
-        + (f"\n{info_html}" if info_html else "")
-        + (f"\n<b>{_styled(html.escape(branding))}</b>\n" if branding else "")
-        + f"\n{_styled_plain('via')} @BeatAnime"
-    )
-    if len(caption_raw) > 1024:
-        caption_raw = caption_raw[:1020] + "…"
+    # Use the unified filter caption format (stream-style info box)
+    t_d  = data.get("title", {}) or {}
+    eng  = t_d.get("english") or t_d.get("romaji") or p_title or title
+    caption_raw = _build_filter_caption(eng, data)
     return poster_buf, caption_raw, data
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1201,18 +1262,8 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
         site_url = data.get("siteUrl", "")
         t_d  = data.get("title", {}) or {}
         eng  = t_d.get("english") or t_d.get("romaji") or matched_anime
-        genres = ", ".join((data.get("genres") or [])[:3])
-        caption = (
-            f"<b>{_here_link_text()}</b>\n"
-            f"<i>{HERE_LINK_NOTE_DEFAULT}</i>\n\n"
-            f"<b>{html.escape(eng)}</b>"
-        )
-        if native:
-            caption += f"\n<i>{html.escape(native)}</i>"
-        if genres:
-            caption += f"\n\n» <b>{_styled_plain('Genre')}:</b> {_styled(html.escape(genres))}"
-        if len(caption) > 1024:
-            caption = caption[:1020] + "…"
+        # Use unified stream-style info caption
+        caption = _build_filter_caption(eng, data)
     except Exception as be:
         logger.debug(f"[filter] poster build: {be}")
 
@@ -1379,14 +1430,14 @@ def _build_index_keyboard(letter: str, titles: list, page: int) -> InlineKeyboar
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"idx_nav:{letter}:{page-1}"))
-    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="idx_noop"))
+        nav.append(InlineKeyboardButton("🔙", callback_data=f"idx_nav:{letter}:{page-1}"))
+    nav.append(InlineKeyboardButton(f"♻️ {page+1}/{pages}", callback_data="idx_noop"))
     if page < pages - 1:
-        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"idx_nav:{letter}:{page+1}"))
+        nav.append(InlineKeyboardButton("🔜", callback_data=f"idx_nav:{letter}:{page+1}"))
     if nav:
         rows.append(nav)
 
-    rows.append([InlineKeyboardButton("✖ Close", callback_data="idx_close")])
+    rows.append([InlineKeyboardButton("✖️ Close", callback_data="idx_close")])
     return InlineKeyboardMarkup(rows)
 
 
