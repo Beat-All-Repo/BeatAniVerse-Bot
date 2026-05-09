@@ -1063,11 +1063,7 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 pass
         return
 
-    # Confirmed match — delete user's trigger message, build and send poster
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=reply_to)
-    except Exception:
-        pass
+    # Confirmed match — build and send poster
     bot             = context.bot
     template        = get_filter_template(chat_id)
     auto_delete_secs = get_auto_delete_seconds(chat_id)
@@ -1249,7 +1245,18 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 file_id_to_cache = sent_msg.photo[-1].file_id
         except Exception as se:
             logger.debug(f"[filter] send photo: {se}")
-            poster_buf = None
+            # Retry without reply_to (original message may be deleted)
+            try:
+                poster_buf.seek(0)
+                sent_msg = await bot.send_photo(
+                    chat_id=chat_id, photo=file_id_to_cache or poster_buf,
+                    caption=caption, parse_mode="HTML", reply_markup=kb,
+                    reply_to_message_id=None)
+                if sent_msg and not file_id_to_cache and sent_msg.photo:
+                    file_id_to_cache = sent_msg.photo[-1].file_id
+            except Exception as se2:
+                logger.debug(f"[filter] send photo retry: {se2}")
+                poster_buf = None
 
     if not sent_msg and data:
         cover_direct = ((data.get("coverImage") or {}).get("extraLarge") or
@@ -1271,7 +1278,13 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
                 reply_markup=kb, reply_to_message_id=reply_to,
                 disable_web_page_preview=True)
         except Exception:
-            pass
+            try:
+                sent_msg = await bot.send_message(
+                    chat_id=chat_id, text=caption, parse_mode="HTML",
+                    reply_markup=kb, reply_to_message_id=None,
+                    disable_web_page_preview=True)
+            except Exception:
+                pass
 
     if file_id_to_cache and _save_cache_fn:
         try:
@@ -1283,6 +1296,13 @@ async def get_or_generate_poster(update: Update, context: ContextTypes.DEFAULT_T
 
     if sent_msg and delete_delay > 0:
         asyncio.create_task(_auto_delete(bot, chat_id, sent_msg.message_id, delay=delete_delay))
+
+    # Delete user's trigger message after poster is sent
+    if reply_to:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=reply_to)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
