@@ -426,6 +426,7 @@ def _migrate_pg() -> None:
             "DO $$ BEGIN ALTER TABLE generated_links ADD COLUMN channel_title TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE generated_links ADD COLUMN source_bot_username TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN join_by_request BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
+            "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN invite_link TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE bot_progress ADD COLUMN anime_name TEXT DEFAULT 'Anime Name'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN blacklist_words TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
@@ -669,21 +670,27 @@ def is_user_banned(user_id: int) -> bool:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_force_sub_channel(channel_username: str, channel_title: str,
-                           join_by_request: bool = False) -> bool:
+                           join_by_request: bool = False,
+                           invite_link: str = None) -> bool:
     ok = _pg_run("""
-        INSERT INTO force_sub_channels (channel_username, channel_title, is_active, join_by_request)
-        VALUES (%s, %s, TRUE, %s)
+        INSERT INTO force_sub_channels
+            (channel_username, channel_title, is_active, join_by_request, invite_link)
+        VALUES (%s, %s, TRUE, %s, %s)
         ON CONFLICT (channel_username) DO UPDATE
             SET channel_title = EXCLUDED.channel_title,
                 is_active = TRUE,
-                join_by_request = EXCLUDED.join_by_request
-    """, (channel_username, channel_title, join_by_request))
+                join_by_request = EXCLUDED.join_by_request,
+                invite_link = COALESCE(EXCLUDED.invite_link, force_sub_channels.invite_link)
+    """, (channel_username, channel_title, join_by_request, invite_link))
     if _MG.db is not None:
         try:
+            doc = {"channel_username": channel_username, "channel_title": channel_title,
+                   "is_active": True, "join_by_request": join_by_request}
+            if invite_link:
+                doc["invite_link"] = invite_link
             _MG.db.force_sub_channels.update_one(
                 {"channel_username": channel_username},
-                {"$set": {"channel_username": channel_username, "channel_title": channel_title,
-                          "is_active": True, "join_by_request": join_by_request}},
+                {"$set": doc},
                 upsert=True,
             )
         except Exception:
@@ -691,7 +698,29 @@ def add_force_sub_channel(channel_username: str, channel_title: str,
     return ok
 
 
+def update_force_sub_invite_link(channel_username: str, invite_link: str) -> bool:
+    """Update the stored invite_link for an existing force-sub channel."""
+    ok = _pg_run(
+        "UPDATE force_sub_channels SET invite_link = %s WHERE channel_username = %s",
+        (invite_link, channel_username),
+    )
+    if _MG.db is not None:
+        try:
+            _MG.db.force_sub_channels.update_one(
+                {"channel_username": channel_username},
+                {"$set": {"invite_link": invite_link}},
+            )
+        except Exception:
+            pass
+    return ok
+
+
 def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
+    """
+    Return list of force-sub channels.
+    If return_usernames_only=True  → list of str (username/id only).
+    Otherwise                      → list of 4-tuples (username, title, jbr, invite_link).
+    """
     if return_usernames_only:
         rows = _pg_exec_many(
             "SELECT channel_username FROM force_sub_channels WHERE is_active = TRUE ORDER BY channel_title"
@@ -700,11 +729,14 @@ def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
             return [r[0] for r in rows]
     else:
         rows = _pg_exec_many("""
-            SELECT channel_username, channel_title, COALESCE(join_by_request, FALSE)
+            SELECT channel_username, channel_title,
+                   COALESCE(join_by_request, FALSE),
+                   COALESCE(invite_link, '')
             FROM force_sub_channels WHERE is_active = TRUE ORDER BY channel_title
         """)
         if rows is not None:
-            return rows
+            # Normalise: each row is a 4-tuple (uname, title, jbr, invite_link)
+            return [tuple(r) for r in rows]
 
     # Mongo fallback
     if _MG.db is not None:
@@ -712,8 +744,15 @@ def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
             docs = list(_MG.db.force_sub_channels.find({"is_active": True}))
             if return_usernames_only:
                 return [d.get("channel_username") for d in docs]
-            return [(d.get("channel_username"), d.get("channel_title"),
-                     d.get("join_by_request", False)) for d in docs]
+            return [
+                (
+                    d.get("channel_username", ""),
+                    d.get("channel_title", ""),
+                    bool(d.get("join_by_request", False)),
+                    d.get("invite_link", "") or "",
+                )
+                for d in docs
+            ]
         except Exception:
             pass
     return []
