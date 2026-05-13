@@ -715,9 +715,19 @@ async def _show_channels_panel(update, context, query=None) -> None:
     text = b(small_caps("📢 force-sub channels")) + "\n\n"
     if channels:
         for ch in channels[:10]:
-            cid = ch.get("channel_id") or ch[0] if isinstance(ch, (list, tuple)) else ch
-            cname = ch.get("channel_name") or ch[1] if isinstance(ch, (list, tuple)) else str(cid)
-            text += f"• <code>{e(str(cid))}</code> — <b>{e(str(cname))}</b>\n"
+            # DB returns 4-tuples (uname, title, jbr, invite_link); handle dicts too
+            if isinstance(ch, dict):
+                cid   = ch.get("channel_username") or ch.get("channel_id") or ""
+                cname = ch.get("channel_title") or ch.get("channel_name") or str(cid)
+                jbr   = bool(ch.get("join_by_request", False))
+            elif isinstance(ch, (list, tuple)):
+                cid   = ch[0] if len(ch) > 0 else ""
+                cname = ch[1] if len(ch) > 1 else str(cid)
+                jbr   = bool(ch[2]) if len(ch) > 2 else False
+            else:
+                cid, cname, jbr = str(ch), str(ch), False
+            jbr_badge = " 🔔<i>JBR</i>" if jbr else ""
+            text += f"• <code>{e(str(cid))}</code> — <b>{e(str(cname))}</b>{jbr_badge}\n"
     else:
         text += bq(small_caps("no force-sub channels configured"))
 
