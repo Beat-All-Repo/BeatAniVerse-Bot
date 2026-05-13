@@ -394,7 +394,6 @@ async def button_handler(
                         break
                 if not log_text:
                     log_text = "No errors found! ✅"
-                from core.text_utils import e
                 text = f"<b>🔴 Error Lines Only</b>\n\n<pre>{e(log_text[-3800:])}</pre>"
                 await _smart_edit(text, InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 All Logs", callback_data="admin_logs_refresh"),
@@ -417,7 +416,6 @@ async def button_handler(
                         break
                 if not log_text:
                     log_text = "No warnings found! ✅"
-                from core.text_utils import e
                 text = f"<b>🟡 Warning Lines Only</b>\n\n<pre>{e(log_text[-3800:])}</pre>"
                 await _smart_edit(text, InlineKeyboardMarkup([[
                     InlineKeyboardButton("🔙 All Logs", callback_data="admin_logs_refresh"),
@@ -528,6 +526,26 @@ async def button_handler(
         context.user_data["bot_prompt_message_id"] = msg.message_id if msg else None
         return
 
+    # ── JBR type selection for private channel forwarding ─────────────────────
+    if data in ("new_ch_jbr_yes", "new_ch_jbr_no"):
+        if not is_admin:
+            return
+        context.user_data["new_ch_jbr"] = (data == "new_ch_jbr_yes")
+        jbr_label = "🔔 Join-Request" if data == "new_ch_jbr_yes" else "📢 Direct-Join"
+        ch_name = e(context.user_data.get("new_ch_title", "this channel"))
+        try:
+            await query.answer(f"Mode set: {jbr_label}")
+        except Exception:
+            pass
+        msg = await safe_send_message(
+            context.bot, chat_id,
+            b(f"✅ Mode: {jbr_label}") + "\n\n"
+            + bq(f"Channel: <b>{ch_name}</b>\n\nNow send the display title, or /skip to use the channel name:"),
+            reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="manage_force_sub")]]),
+        )
+        context.user_data["bot_prompt_message_id"] = msg.message_id if msg else None
+        return
+
     if data == "fsub_fwd_help":
         user_states[uid] = PENDING_CHANNEL_POST
         await safe_edit_text(
@@ -545,7 +563,7 @@ async def button_handler(
         if not channels:
             await safe_answer(query, "No channels to remove.")
             return
-        buttons = [_btn(f"{title or uname}", f"fsub_del_{uname}") for uname, title, jbr in channels]
+        buttons = [_btn(f"{row[1] or row[0]}", f"fsub_del_{row[0]}") for row in channels]
         rows = _grid3(buttons)
         rows.append([_back_btn("manage_force_sub"), _close_btn()])
         await safe_edit_text(query, b("SELECT CHANNEL TO REMOVE"), reply_markup=InlineKeyboardMarkup(rows))
@@ -567,8 +585,11 @@ async def button_handler(
         from database_dual import get_all_force_sub_channels
         channels = get_all_force_sub_channels(return_usernames_only=False)
         text = b(f"ALL FORCE-SUB CHANNELS ({len(channels)})") + "\n\n"
-        for i, (uname, title, jbr) in enumerate(channels, 1):
-            jbr_str = " ✔️ JBR" if jbr else ""
+        for i, row in enumerate(channels, 1):
+            uname = row[0] if len(row) > 0 else ""
+            title = row[1] if len(row) > 1 else uname
+            jbr   = bool(row[2]) if len(row) > 2 else False
+            jbr_str = " 🔔 JBR" if jbr else ""
             text += f"<b>{i}.</b> {e(title or uname)}{jbr_str}\n    ID: <code>{e(str(uname))}</code>\n"
         await safe_edit_text(
             query, text,
