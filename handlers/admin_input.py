@@ -108,17 +108,36 @@ async def handle_admin_message(
         lookup = int(uname) if uname.lstrip("-").isdigit() else (uname if uname.startswith("@") else f"@{uname}")
         try:
             tg_chat = await context.bot.get_chat(lookup)
-            context.user_data["new_ch_uname"] = str(tg_chat.id)
-            context.user_data["new_ch_title"] = tg_chat.title
+            is_private = not tg_chat.username
+            # Store @username for public channels so the join URL works;
+            # numeric ID for private channels (invite link generated later).
+            context.user_data["new_ch_uname"] = (
+                f"@{tg_chat.username}" if tg_chat.username else str(tg_chat.id)
+            )
+            context.user_data["new_ch_title"]      = tg_chat.title
+            context.user_data["new_ch_is_private"] = is_private
+            context.user_data["new_ch_jbr"]        = False  # default; admin can pick later
             user_states[uid] = ADD_CHANNEL_TITLE
             ch_info = f"<b>Channel:</b> {e(tg_chat.title)}\n<b>ID:</b> <code>{tg_chat.id}</code>"
             if tg_chat.username:
                 ch_info += f"\n<b>Username:</b> @{e(tg_chat.username)}"
+            else:
+                ch_info += "\n<b>Type:</b> Private channel"
+            private_note = (
+                "\n\n" + b("Is this a Join-Request (JBR) channel?") +
+                "\n<i>If users must request to join, use the JBR button below.</i>"
+                if is_private else ""
+            )
+            jbr_row = [
+                bold_button("🔔 JBR Mode", callback_data="new_ch_jbr_yes"),
+                bold_button("📢 Direct Join", callback_data="new_ch_jbr_no"),
+            ] if is_private else []
+            btn_rows = ([jbr_row] if jbr_row else []) + [[bold_button("🔙 Cancel", callback_data="manage_force_sub")]]
             msg = await safe_send_message(
                 context.bot, chat_id,
-                b("✅ Channel found!") + "\n\n" + bq(ch_info) + "\n\n"
+                b("✅ Channel found!") + "\n\n" + bq(ch_info) + private_note + "\n\n"
                 + b("Send a display title, or /skip to use the channel name:"),
-                reply_markup=InlineKeyboardMarkup([[bold_button("🔙 Cancel", callback_data="manage_force_sub")]]),
+                reply_markup=InlineKeyboardMarkup(btn_rows),
             )
             context.user_data["bot_prompt_message_id"] = msg.message_id if msg else None
         except Exception as exc:
@@ -141,10 +160,41 @@ async def handle_admin_message(
         title = text.strip()
         if title.lower() == "/skip":
             title = context.user_data.get("new_ch_title", uname)
+
+        # Detect if this is a private channel (numeric ID, no public @username).
+        # Also read the stored join_by_request flag if set by ADD_CHANNEL_USERNAME.
+        join_by_request = bool(context.user_data.pop("new_ch_jbr", False))
+        stored_invite   = context.user_data.pop("new_ch_invite_link", None) or ""
+        is_private      = uname.lstrip("-").isdigit()
+
+        # For private channels with no stored invite link, generate one now.
+        if is_private and not stored_invite:
+            try:
+                chat_obj = await context.bot.get_chat(int(uname))
+                if join_by_request:
+                    lnk_obj = await context.bot.create_chat_invite_link(
+                        int(uname), creates_join_request=True
+                    )
+                else:
+                    lnk_obj = await context.bot.export_chat_invite_link(int(uname))
+                stored_invite = getattr(lnk_obj, "invite_link", lnk_obj) or ""
+            except Exception as _ex:
+                logger.debug(f"Could not auto-generate invite link for {uname}: {_ex}")
+
         from database_dual import add_force_sub_channel
-        add_force_sub_channel(uname, title, join_by_request=False)
+        add_force_sub_channel(
+            uname, title,
+            join_by_request=join_by_request,
+            invite_link=stored_invite or None,
+        )
+        jbr_note = " (🔔 Join-Request mode)" if join_by_request else ""
+        link_note = f"\n<i>Invite link stored.</i>" if stored_invite else (
+            "\n⚠️ <i>No invite link — bot may not be admin there. Use /setinvite.</i>"
+            if is_private else ""
+        )
         await safe_send_message(
-            context.bot, chat_id, b(f"✅ Added {e(title)} ({e(uname)}) as force-sub channel!")
+            context.bot, chat_id,
+            b(f"✅ Added {e(title)} ({e(uname)}) as force-sub channel!") + jbr_note + link_note,
         )
         user_states.pop(uid, None)
         from handlers.admin_panel import send_admin_menu
