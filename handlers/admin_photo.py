@@ -268,20 +268,48 @@ async def handle_admin_photo(
             return
         try:
             tg_chat = await context.bot.get_chat(fwd_chat.id)
-            context.user_data["new_ch_uname"] = str(tg_chat.id)
+            is_private = not tg_chat.username
+            # Store numeric ID for private channels; @username for public
+            context.user_data["new_ch_uname"] = (
+                str(tg_chat.id) if is_private else f"@{tg_chat.username}"
+            )
             context.user_data["new_ch_title"] = tg_chat.title
+            context.user_data["new_ch_is_private"] = is_private
             user_states[uid] = ADD_CHANNEL_TITLE
+
+            # Detect if the channel uses join-by-request (linked_chat has requests enabled).
+            # The simplest heuristic: if it's private, ask admin via inline buttons.
             ch_info = f"<b>Channel:</b> {e(tg_chat.title)}\n<b>ID:</b> <code>{tg_chat.id}</code>"
             if tg_chat.username:
                 ch_info += f"\n<b>Username:</b> @{e(tg_chat.username)}"
-            await msg.reply_text(
+            else:
+                ch_info += "\n<b>Type:</b> Private channel"
+
+            jbr_btns = [
+                [
+                    bold_button("🔔 Join Request (JBR)", callback_data="new_ch_jbr_yes"),
+                    bold_button("📢 Direct Join",        callback_data="new_ch_jbr_no"),
+                ],
+                [bold_button("🔙 Cancel", callback_data="manage_force_sub")],
+            ] if is_private else [
+                [bold_button("🔙 Cancel", callback_data="manage_force_sub")]
+            ]
+
+            prompt = (
                 b("✅ Channel detected from forwarded post!") + "\n\n"
                 + bq(ch_info) + "\n\n"
-                + b("Send a display title, or /skip to use the channel name:"),
+            )
+            if is_private:
+                prompt += b("Is this a Join-Request channel or direct-join?\n") + (
+                    "<i>Choose below, then send the display title (or /skip).</i>"
+                )
+            else:
+                prompt += b("Send a display title, or /skip to use the channel name:")
+
+            await msg.reply_text(
+                prompt,
                 parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [bold_button("🔙 Cancel", callback_data="manage_force_sub")]
-                ]),
+                reply_markup=InlineKeyboardMarkup(jbr_btns),
             )
         except Exception as exc:
             await msg.reply_text(
