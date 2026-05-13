@@ -9,31 +9,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional, Any
 
-# ── BCJ exact pattern ──────────────────────────────────────────────────────────
-# Pure in-memory dict: channel_id → {"link": str, "ts": datetime, "jbr": bool}
-# Dict lookup = nanoseconds. BCJ uses async DB (asyncpg); BAV's DB is sync-
-# blocking so in-memory dict is equivalent and faster.
+# ── In-memory invite link cache (BCJ pattern) ─────────────────────────────────
+# channel_id (int) → {"link": str, "ts": datetime, "jbr": bool}
+# Dict lookup = nanoseconds. Zero DB, zero API on cache hit.
 _invite_cache: dict = {}
-
-# Per-channel lock — only ONE coroutine calls Telegram API at a time.
-# BCJ: channel_locks = defaultdict(asyncio.Lock)
-_channel_locks: dict = defaultdict(asyncio.Lock)
-
-
-async def _revoke_invite_after_delay(bot, channel_id: int, link: str, delay: int = 300) -> None:
-    """
-    BCJ exact: revoke_invite_after_5_minutes
-    Revoke the invite link after `delay` seconds (default 5 min / 300 s).
-    Runs as a fire-and-forget asyncio task.
-    Also clears the in-memory cache so next user triggers a fresh link.
-    """
-    await asyncio.sleep(delay)
-    try:
-        await bot.revoke_chat_invite_link(channel_id, link)
-    except Exception:
-        pass
-    # Clear cache entry so next request gets a fresh link
-    _invite_cache.pop(channel_id, None)
+_channel_locks: dict = defaultdict(asyncio.Lock)  # one lock per channel
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot,
@@ -299,16 +279,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await delete_bot_prompt(context, chat_id)
 
-    loading_msg = None
-    if uid not in (ADMIN_ID, OWNER_ID):
-        await send_transition_sticker(context, chat_id)
-        loading_msg = await loading_animation_start(context, chat_id)
-
-    # Deep link handling
+    # ── Deep link: NO animation, go straight to link delivery ────────────────
+    # Animation adds ~2.5 s of intentional sleeps — skip it entirely for links.
     if context.args:
         link_id = context.args[0]
+
         if link_id.lower() == "help":
-            await loading_animation_end(context, chat_id, loading_msg)
             from handlers.help import help_command
             await help_command(update, context)
             return
@@ -325,7 +301,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 clones = get_all_clone_bots(active_only=True)
                 if clones:
                     clone_uname = clones[0][2]
-                    await loading_animation_end(context, chat_id, loading_msg)
                     await safe_send_message(
                         context.bot, chat_id,
                         b("🔄 Getting your link via our server bot…"),
@@ -340,11 +315,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             except Exception:
                 pass
 
-        await loading_animation_end(context, chat_id, loading_msg)
         await handle_deep_link(update, context, link_id)
         return
 
-    await loading_animation_end(context, chat_id, loading_msg)
+    # ── Regular /start: sticker only, no loading animation ───────────────────
+    if uid not in (ADMIN_ID, OWNER_ID):
+        await send_transition_sticker(context, chat_id)
 
     # Admin panel
     if uid in (ADMIN_ID, OWNER_ID):
@@ -458,7 +434,7 @@ async def handle_deep_link(
     context: ContextTypes.DEFAULT_TYPE,
     link_id: str,
 ) -> None:
-    """Handle deep link /start?start=<link_id>. BCJ exact pattern."""
+    """Handle deep link /start?start=<link_id>."""
     from core.text_utils import now_utc
     chat_id = update.effective_chat.id
 
@@ -468,7 +444,6 @@ async def handle_deep_link(
         await safe_send_message(context.bot, chat_id, b("❌ Service unavailable."))
         return
 
-    # ── Validate link_id ──────────────────────────────────────────────────────
     link_info = get_link_info(link_id)
     if not link_info:
         await safe_send_message(
@@ -481,7 +456,6 @@ async def handle_deep_link(
 
     channel_identifier, creator_id, created_time, never_expires = link_info
 
-    # ── Check post expiry (unchanged) ─────────────────────────────────────────
     if not never_expires:
         try:
             created_dt = datetime.fromisoformat(str(created_time))
@@ -501,13 +475,6 @@ async def handle_deep_link(
         except Exception:
             pass
 
-    # ── Resolve channel_id — NO get_chat() call (BCJ never calls it) ──────────
-    if isinstance(channel_identifier, str) and channel_identifier.lstrip("-").isdigit():
-        channel_id = int(channel_identifier)
-    else:
-        channel_id = channel_identifier
-
-    # ── Clone: use main bot token (unchanged) ─────────────────────────────────
     invite_bot = context.bot
     if I_AM_CLONE:
         main_token = get_main_bot_token()
@@ -517,105 +484,104 @@ async def handle_deep_link(
             except Exception:
                 pass
 
-    # ── Determine join-by-request mode (unchanged) ────────────────────────────
-    _ch_info = get_force_sub_channel_info(str(channel_id))
-    _jbr_mode = bool(_ch_info and _ch_info[2]) if _ch_info else False
+    try:
+        # Resolve channel_id — NO get_chat() call needed, it's already in DB
+        if isinstance(channel_identifier, str) and channel_identifier.lstrip("-").isdigit():
+            channel_id = int(channel_identifier)
+        else:
+            channel_id = channel_identifier
 
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # BCJ EXACT PATTERN
-    # ─ Cache HIT  (age < 240 s) → zero API calls → nanoseconds
-    # ─ Cache MISS → revoke old link → create new → store → schedule revoke
-    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    invite_link = None
-    _cached = _invite_cache.get(channel_id)
-    if _cached and _cached.get("jbr") == _jbr_mode:
-        age = (datetime.utcnow() - _cached["ts"]).total_seconds()
-        if age < 240:                        # BCJ: 4 minutes reuse window
-            invite_link = _cached["link"]   # ✅ instant — no DB, no API
+        _ch_info = get_force_sub_channel_info(str(channel_id))
+        _jbr_mode = bool(_ch_info and _ch_info[2]) if _ch_info else False
 
-    if not invite_link:
-        # ── One API call per channel per window, protected by lock ────────────
-        # BCJ: async with channel_locks[channel_id]
-        async with _channel_locks[channel_id]:
-            # Double-check after acquiring lock
-            _cached = _invite_cache.get(channel_id)
-            if _cached and _cached.get("jbr") == _jbr_mode:
-                age = (datetime.utcnow() - _cached["ts"]).total_seconds()
-                if age < 240:
-                    invite_link = _cached["link"]
+        # ── Cache HIT: serve instantly (zero API calls) ───────────────────────
+        invite_link = None
+        _cached = _invite_cache.get(channel_id)
+        if _cached and _cached.get("jbr") == _jbr_mode:
+            age = (datetime.utcnow() - _cached["ts"]).total_seconds()
+            if age < 240:
+                invite_link = _cached["link"]
 
-            if not invite_link:
-                # ── BCJ: revoke old link before creating new ──────────────────
-                if _cached:
-                    try:
-                        await invite_bot.revoke_chat_invite_link(
-                            channel_id, _cached["link"]
-                        )
-                    except Exception:
-                        pass
-                    _invite_cache.pop(channel_id, None)
+        # ── Cache MISS: one API call, protected by per-channel lock ──────────
+        if not invite_link:
+            async with _channel_locks[channel_id]:
+                # Double-check after acquiring lock
+                _cached = _invite_cache.get(channel_id)
+                if _cached and _cached.get("jbr") == _jbr_mode:
+                    age = (datetime.utcnow() - _cached["ts"]).total_seconds()
+                    if age < 240:
+                        invite_link = _cached["link"]
 
-                try:
-                    current_time = datetime.utcnow()
-                    # BCJ: expire_date = current_time + timedelta(minutes=10)
+                if not invite_link:
+                    # Revoke old cached link before creating new one
+                    if _cached:
+                        try:
+                            await invite_bot.revoke_chat_invite_link(
+                                channel_id, _cached["link"]
+                            )
+                        except Exception:
+                            pass
+                        _invite_cache.pop(channel_id, None)
+
+                    expire_ts = int(
+                        (datetime.utcnow() + timedelta(minutes=10)).timestamp()
+                    )
+                    # No member_limit — reusable by all users in cache window
                     invite = await invite_bot.create_chat_invite_link(
                         channel_id,
-                        expire_date=current_time + timedelta(minutes=10),
+                        expire_date=expire_ts,
+                        name=f"DeepLink {link_id[:8]}",
                         creates_join_request=_jbr_mode,
-                        # No member_limit — reusable within cache window (BCJ exact)
                     )
                     invite_link = invite.invite_link
-
-                    # Store in memory — next user is instant
                     _invite_cache[channel_id] = {
                         "link": invite_link,
                         "ts":   datetime.utcnow(),
                         "jbr":  _jbr_mode,
                     }
+                    # Auto-revoke after 5 min (BCJ pattern)
+                    async def _revoke_later(_bot=invite_bot, _cid=channel_id, _lnk=invite_link):
+                        await asyncio.sleep(300)
+                        try:
+                            await _bot.revoke_chat_invite_link(_cid, _lnk)
+                        except Exception:
+                            pass
+                        _invite_cache.pop(_cid, None)
+                    asyncio.create_task(_revoke_later())
 
-                    # ── BCJ: revoke_invite_after_5_minutes ────────────────────
-                    # Fire-and-forget: revokes link after 300 s and clears cache
-                    asyncio.create_task(
-                        _revoke_invite_after_delay(invite_bot, channel_id, invite_link, 300)
-                    )
+        try:
+            from database_dual import get_setting
+            _here_link = get_setting("env_HERE_IS_LINK_TEXT", HERE_IS_LINK_TEXT) or HERE_IS_LINK_TEXT
+            _join_text = get_setting("env_JOIN_BTN_TEXT", JOIN_BTN_TEXT) or JOIN_BTN_TEXT
+        except Exception:
+            _here_link = HERE_IS_LINK_TEXT
+            _join_text = JOIN_BTN_TEXT
 
-                except Forbidden as exc:
-                    await safe_send_message(
-                        context.bot, chat_id,
-                        b("🚫 Bot Access Error") + "\n\n"
-                        + bq(b("The bot has been removed from that channel. Please contact admin.")),
-                    )
-                    logger.error(f"handle_deep_link Forbidden: {exc}")
-                    return
-                except Exception as exc:
-                    logger.error(f"handle_deep_link error: {exc}")
-                    from core.helpers import UserFriendlyError
-                    await safe_send_message(context.bot, chat_id, UserFriendlyError.get_user_message(exc))
-                    return
+        _jbr_note = ""
+        if _jbr_mode:
+            _jbr_note = "\n" + b(small_caps("tap join → request sent → auto-approved instantly"))
 
-    # ── Send invite link (all existing text/button logic unchanged) ───────────
-    try:
-        from database_dual import get_setting
-        _here_link = get_setting("env_HERE_IS_LINK_TEXT", HERE_IS_LINK_TEXT) or HERE_IS_LINK_TEXT
-        _join_text  = get_setting("env_JOIN_BTN_TEXT",    JOIN_BTN_TEXT)     or JOIN_BTN_TEXT
-    except Exception:
-        _here_link = HERE_IS_LINK_TEXT
-        _join_text  = JOIN_BTN_TEXT
+        _link_msg = (
+            f"<blockquote><b>{small_caps(_here_link)}</b></blockquote>\n\n"
+            + f"<u><b>{small_caps('ɴᴏᴛᴇ: ɪꜰ ᴛʜᴇ ʟɪɴᴋ ɪs ᴇxᴘɪʀᴇᴅ, ᴘʟᴇᴀsᴇ ᴄʟɪᴄᴋ ᴛʜᴇ ᴘᴏsᴛ ʟɪɴᴋ ᴀɢᴀɪɴ.')}</b></u>"
+        )
+        if _jbr_note:
+            _link_msg += "\n" + _jbr_note
 
-    _jbr_note = ""
-    if _jbr_mode:
-        _jbr_note = "\n" + b(small_caps("tap join → request sent → auto-approved instantly"))
-
-    _link_msg = (
-        f"<blockquote><b>{small_caps(_here_link)}</b></blockquote>\n\n"
-        + f"<u><b>{small_caps('ɴᴏᴛᴇ: ɪꜰ ᴛʜᴇ ʟɪɴᴋ ɪs ᴇxᴘɪʀᴇᴅ, ᴘʟᴇᴀsᴇ ᴄʟɪᴄᴋ ᴛʜᴇ ᴘᴏsᴛ ʟɪɴᴋ ᴀɢᴀɪɴ.')}</b></u>"
-    )
-    if _jbr_note:
-        _link_msg += "\n" + _jbr_note
-
-    keyboard = [[bold_button(small_caps(_join_text), url=invite_link)]]
-    await context.bot.send_message(
-        chat_id, _link_msg,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+        keyboard = [[bold_button(small_caps(_join_text), url=invite_link)]]
+        await context.bot.send_message(
+            chat_id, _link_msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Forbidden as exc:
+        await safe_send_message(
+            context.bot, chat_id,
+            b("🚫 Bot Access Error") + "\n\n"
+            + bq(b("The bot has been removed from that channel. Please contact admin.")),
+        )
+        logger.error(f"handle_deep_link Forbidden error: {exc}")
+    except Exception as exc:
+        logger.error(f"handle_deep_link error: {exc}")
+        from core.helpers import UserFriendlyError
+        await safe_send_message(context.bot, chat_id, UserFriendlyError.get_user_message(exc))
