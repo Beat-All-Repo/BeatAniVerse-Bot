@@ -58,10 +58,14 @@ def passes_filter(update: "Update", command: str = "") -> bool:
 # ── Force subscription check ───────────────────────────────────────────────────
 
 async def get_unsubscribed_channels(
-    user_id: int, bot: Bot
-) -> List[Tuple[str, str, bool]]:
+    user_id: int, bot: Bot, skip_jbr: bool = False
+) -> List[Tuple[str, str, bool, str]]:
     """
-    Return list of (username, title, jbr) for channels the user has not joined.
+    Return list of 4-tuples (username, title, jbr, invite_link) for channels
+    the user has not joined/requested.
+
+    skip_jbr=True  → JBR channels are skipped entirely (used for "Try Again"
+                      so that a user who has sent a join request can proceed).
     """
     try:
         from database_dual import get_all_force_sub_channels, get_main_bot_token
@@ -72,7 +76,7 @@ async def get_unsubscribed_channels(
     if not channels_info:
         return []
 
-    unsubscribed = []
+    unsubscribed: List[Tuple[str, str, bool, str]] = []
     main_bot: Optional[Bot] = None
 
     from core.config import I_AM_CLONE
@@ -84,7 +88,19 @@ async def get_unsubscribed_channels(
             except Exception:
                 pass
 
-    for uname, title, jbr in channels_info:
+    for row in channels_info:
+        # Safely unpack 3- or 4-element rows for backwards compat
+        if len(row) >= 4:
+            uname, title, jbr, invite_link = row[0], row[1], row[2], row[3]
+        else:
+            uname, title, jbr = row[0], row[1], row[2]
+            invite_link = ""
+
+        # For JBR channels during a "Try Again" check: bypass entirely.
+        # The user is assumed to have sent a join request already.
+        if jbr and skip_jbr:
+            continue
+
         subscribed = False
         for check_bot in filter(None, [bot, main_bot]):
             try:
@@ -96,9 +112,13 @@ async def get_unsubscribed_channels(
                     break
             except Exception as exc:
                 logger.debug(f"Membership check {uname} failed: {exc}")
+                # For private channels where bot can't fetch membership (e.g. not admin),
+                # allow access rather than blocking forever.
+                if jbr:
+                    subscribed = True  # JBR: can't verify, give benefit of the doubt
                 continue
         if not subscribed:
-            unsubscribed.append((uname, title, jbr))
+            unsubscribed.append((uname, title, jbr, invite_link))
 
     return unsubscribed
 
@@ -155,13 +175,39 @@ async def send_ban_screen(update: Update, context) -> None:
         pass
 
 
+def _make_channel_join_url(uname: str, jbr: bool, invite_link: str) -> str:
+    """
+    Build the best URL for a force-sub channel button.
+
+    Priority:
+      1. Stored invite_link  (already a full URL, works for both public & private).
+      2. Public @username    → https://t.me/{username}
+      3. Numeric channel ID  → None (caller will skip button or show placeholder).
+    """
+    if invite_link:
+        return invite_link
+    # Public username stored as "@handle" or bare "handle"
+    clean = uname.lstrip("@")
+    if clean and not clean.lstrip("-").isdigit():
+        return f"https://t.me/{clean}"
+    # Private channel with no invite link stored yet – nothing we can do here
+    return ""
+
+
 async def _send_force_sub_screen(
     update: Update,
     context,
-    unsubscribed: List[Tuple[str, str, bool]],
+    unsubscribed: List[Tuple],
     user_id: int,
 ) -> None:
-    """Display the force-sub join screen."""
+    """
+    Display the force-sub join screen.
+
+    Each entry in *unsubscribed* is a 4-tuple (uname, title, jbr, invite_link).
+    For JBR channels the button label says "Send Join Request" and the invite
+    link must be a join-request link (created via create_chat_invite_link with
+    creates_join_request=True).
+    """
     from database_dual import get_all_force_sub_channels
     user = update.effective_user
     total = len(get_all_force_sub_channels(return_usernames_only=False))
@@ -171,21 +217,46 @@ async def _send_force_sub_screen(
         getattr(user, "username", None) or "Friend"
     )
 
+    has_jbr = any((row[2] if len(row) > 2 else False) for row in unsubscribed)
+
+    join_instruction = (
+        b("Please join / request to join ALL channels below,\n")
+        + b("then click ♻️ Try Again.")
+    )
+    if has_jbr:
+        join_instruction += (
+            "\n\n<i>Channels marked 🔔 require a <b>Join Request</b>. "
+            "Just tap the button to send your request — that counts as joined!</i>"
+        )
+
     text = (
         f"⚠️ {b(f'Hey {user_name}! You need to join {unjoined} channel(s).')}\n\n"
-        + bq(
-            b("Please join ALL the channels listed below,\n")
-            + b("then click the  Try Again button.")
-        )
+        + bq(join_instruction)
         + f"\n\n<b>Total channels: {total} | Unjoined: {unjoined}</b>"
     )
 
     keyboard = []
-    for uname, title, jbr in unsubscribed:
-        clean = uname.lstrip("@")
-        keyboard.append([InlineKeyboardButton(f" {title}", url=f"https://t.me/{clean}")])
+    for row in unsubscribed:
+        uname      = row[0] if len(row) > 0 else ""
+        title      = row[1] if len(row) > 1 else uname
+        jbr        = row[2] if len(row) > 2 else False
+        invite_link = row[3] if len(row) > 3 else ""
 
-    keyboard.append([bold_button("♻️Try Again", callback_data="verify_subscription")])
+        url = _make_channel_join_url(uname, jbr, invite_link)
+        if jbr:
+            label = f"🔔 {title} — Send Request"
+        else:
+            label = f"📢 {title} — Join"
+
+        if url:
+            keyboard.append([InlineKeyboardButton(label, url=url)])
+        else:
+            # Private channel with no invite link stored; show placeholder
+            keyboard.append([InlineKeyboardButton(
+                f"⚠️ {title} (contact admin for link)", callback_data="noop"
+            )])
+
+    keyboard.append([bold_button("♻️ Try Again", callback_data="verify_subscription")])
     keyboard.append([bold_button("Help", callback_data="user_help")])
     markup = InlineKeyboardMarkup(keyboard)
 
@@ -232,7 +303,15 @@ def force_sub_required(func: Callable) -> Callable:
             await send_maintenance_block(update, context)
             return
 
-        unsubscribed = await get_unsubscribed_channels(uid, context.bot)
+        # For "Try Again" button: bypass JBR channels so a user who has
+        # sent a join request (which we cannot verify via Bot API) can proceed.
+        is_verify_action = bool(
+            update.callback_query and
+            (update.callback_query.data or "").strip() == "verify_subscription"
+        )
+        unsubscribed = await get_unsubscribed_channels(
+            uid, context.bot, skip_jbr=is_verify_action
+        )
         if unsubscribed:
             await _send_force_sub_screen(update, context, unsubscribed, uid)
             return
