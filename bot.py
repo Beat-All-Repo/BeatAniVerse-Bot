@@ -140,10 +140,16 @@ def _register_all_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("addpanelimg",    addpanelimg_command))
     app.add_handler(CommandHandler("getfileid",      getfileid_command))
 
-    # ── Auto-approve admin commands (ported from BCJ bot) ─────────────────────
+    # ── Force-sub & auto-approve commands (ported from BCJ bot) ──────────────
     from handlers.channels import (
+        cmd_addfsub, cmd_delfsub, cmd_fsublist,
         cmd_reqtime, cmd_reqmode, cmd_approveoff, cmd_approveon, cmd_approve_status,
     )
+    # FSub management (admin only)
+    app.add_handler(CommandHandler("addfsub",       cmd_addfsub,       filters=admin_filter))
+    app.add_handler(CommandHandler("delfsub",       cmd_delfsub,       filters=admin_filter))
+    app.add_handler(CommandHandler(["fsublist", "listfsub"], cmd_fsublist, filters=admin_filter))
+    # Auto-approve settings (admin only)
     app.add_handler(CommandHandler("reqtime",       cmd_reqtime,       filters=admin_filter))
     app.add_handler(CommandHandler("reqmode",       cmd_reqmode,       filters=admin_filter))
     app.add_handler(CommandHandler("approveoff",    cmd_approveoff,    filters=admin_filter))
