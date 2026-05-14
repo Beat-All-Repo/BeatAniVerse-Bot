@@ -58,14 +58,20 @@ def passes_filter(update: "Update", command: str = "") -> bool:
 # ── Force subscription check ───────────────────────────────────────────────────
 
 async def get_unsubscribed_channels(
-    user_id: int, bot: Bot, skip_jbr: bool = False
+    user_id: int, bot: Bot
 ) -> List[Tuple[str, str, bool, str]]:
     """
-    Return list of 4-tuples (username, title, jbr, invite_link) for channels
-    the user has not joined/requested.
+    Return 4-tuples (username, title, jbr, invite_link) for channels the user
+    has NOT yet fully joined.
 
-    skip_jbr=True  → JBR channels are skipped entirely (used for "Try Again"
-                      so that a user who has sent a join request can proceed).
+    JBR (join-by-request) channels are auto-approved by the ChatJoinRequest
+    handler in channels.py the moment the user taps "Send Request".  After
+    approval their status becomes MEMBER, so this check passes naturally on the
+    next "Try Again" click — no special bypass needed.
+
+    Fallback: if get_chat_member raises an exception on a JBR channel (bot is
+    not admin there and cannot read membership), we give the user the benefit
+    of the doubt and treat them as subscribed rather than blocking them forever.
     """
     try:
         from database_dual import get_all_force_sub_channels, get_main_bot_token
@@ -90,33 +96,49 @@ async def get_unsubscribed_channels(
 
     for row in channels_info:
         # Safely unpack 3- or 4-element rows for backwards compat
-        if len(row) >= 4:
-            uname, title, jbr, invite_link = row[0], row[1], row[2], row[3]
-        else:
-            uname, title, jbr = row[0], row[1], row[2]
-            invite_link = ""
-
-        # For JBR channels during a "Try Again" check: bypass entirely.
-        # The user is assumed to have sent a join request already.
-        if jbr and skip_jbr:
-            continue
+        uname       = row[0] if len(row) > 0 else ""
+        title       = row[1] if len(row) > 1 else uname
+        jbr         = bool(row[2]) if len(row) > 2 else False
+        invite_link = row[3] if len(row) > 3 else ""
 
         subscribed = False
+        checked    = False
         for check_bot in filter(None, [bot, main_bot]):
             try:
                 member = await check_bot.get_chat_member(chat_id=uname, user_id=user_id)
+                checked = True
+                # MEMBER, ADMINISTRATOR, OWNER, RESTRICTED (still in channel) all pass
                 if member.status not in ("left", "kicked"):
                     subscribed = True
-                    break
-                else:
-                    break
+                break
             except Exception as exc:
                 logger.debug(f"Membership check {uname} failed: {exc}")
-                # For private channels where bot can't fetch membership (e.g. not admin),
-                # allow access rather than blocking forever.
-                if jbr:
-                    subscribed = True  # JBR: can't verify, give benefit of the doubt
                 continue
+
+        # ── JBR fallback: check if user already sent a join request ────────────
+        # Even if the membership check failed (bot not admin) or the approval
+        # hasn't happened yet, if we have a stored record that the user sent
+        # a request to this channel, do NOT ask them to do it again.
+        if not subscribed and jbr:
+            try:
+                from database_dual import has_fsub_join_request
+                # Determine numeric channel_id if we have it stored
+                ch_id_int = None
+                try:
+                    ch_id_int = int(uname.lstrip("@"))
+                except (ValueError, TypeError):
+                    pass
+                if has_fsub_join_request(user_id, uname, channel_id=ch_id_int):
+                    logger.debug(f"[fsub] user {user_id} has pending request for {uname} — skipping")
+                    subscribed = True
+            except Exception as _hr_err:
+                logger.debug(f"[fsub] has_fsub_join_request error: {_hr_err}")
+
+        # Last resort: if we couldn't check at all AND it's a JBR channel,
+        # give benefit of the doubt rather than blocking forever.
+        if not checked and not subscribed and jbr:
+            subscribed = True
+
         if not subscribed:
             unsubscribed.append((uname, title, jbr, invite_link))
 
@@ -201,74 +223,131 @@ async def _send_force_sub_screen(
     user_id: int,
 ) -> None:
     """
-    Display the force-sub join screen.
-
-    Each entry in *unsubscribed* is a 4-tuple (uname, title, jbr, invite_link).
-    For JBR channels the button label says "Send Join Request" and the invite
-    link must be a join-request link (created via create_chat_invite_link with
-    creates_join_request=True).
+    Display the force-sub join screen matching the BeatAniVerse UI:
+      • Photo banner (configurable via bot setting "fsub_photo")
+      • Caption with user name, unjoined/total count, help note
+      • One button per channel — small caps channel title only (no emoji prefix)
+      • ♻️ Try Again at bottom
     """
-    from database_dual import get_all_force_sub_channels
-    user = update.effective_user
-    total = len(get_all_force_sub_channels(return_usernames_only=False))
-    unjoined = len(unsubscribed)
+    from database_dual import get_all_force_sub_channels, get_setting
+    user      = update.effective_user
+    total     = len(get_all_force_sub_channels(return_usernames_only=False))
+    unjoined  = len(unsubscribed)
     user_name = e(
         getattr(user, "first_name", None) or
         getattr(user, "username", None) or "Friend"
     )
 
-    has_jbr = any((row[2] if len(row) > 2 else False) for row in unsubscribed)
-
-    join_instruction = (
-        b("Please join / request to join ALL channels below,\n")
-        + b("then click ♻️ Try Again.")
-    )
-    if has_jbr:
-        join_instruction += (
-            "\n\n<i>Channels marked 🔔 require a <b>Join Request</b>. "
-            "Just tap the button to send your request — that counts as joined!</i>"
-        )
-
-    text = (
-        f"⚠️ {b(f'Hey {user_name}! You need to join {unjoined} channel(s).')}\n\n"
-        + bq(join_instruction)
-        + f"\n\n<b>Total channels: {total} | Unjoined: {unjoined}</b>"
+    # unjoined = channels user still needs to join/request
+    # total    = all configured fsub channels
+    # Display: "X/Y channels" → X left to join out of Y total required
+    caption = (
+        f"⚠️ {b(f'ʜᴇʏ, {small_caps(user_name)} ×')} »\n\n"
+        f"{b(f'ʏᴏᴜ ʜᴀᴠᴇɴᴛ ᴊᴏɪɴᴇᴅ {unjoined}/{total} ᴄʜᴀɴɴᴇʟs ʏᴇᴛ. ')}"
+        f"{b('ᴘʟᴇᴀsᴇ ᴊᴏɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟs ᴘʀᴏᴠɪᴅᴇᴅ ʙᴇʟᴏᴡ, ᴛʜᴇɴ ᴛʀʏ ᴀɢᴀɪɴ.. !')}\n\n"
+        f"❗ {b('ғᴀᴄɪɴɢ ᴘʀᴏʙʟᴇᴍs, ᴜsᴇ:')} /help"
     )
 
+    # ── Buttons: channel title only in small caps, no emoji prefix ────────────
     keyboard = []
     for row in unsubscribed:
-        uname      = row[0] if len(row) > 0 else ""
-        title      = row[1] if len(row) > 1 else uname
-        jbr        = row[2] if len(row) > 2 else False
+        uname       = row[0] if len(row) > 0 else ""
+        title       = row[1] if len(row) > 1 else uname
         invite_link = row[3] if len(row) > 3 else ""
 
-        url = _make_channel_join_url(uname, jbr, invite_link)
-        if jbr:
-            label = f"🔔 {title} — Send Request"
-        else:
-            label = f"📢 {title} — Join"
+        url   = _make_channel_join_url(uname, bool(row[2]) if len(row) > 2 else False, invite_link)
+        label = small_caps(title.strip()) if title.strip() else small_caps(uname.lstrip("@"))
 
         if url:
             keyboard.append([InlineKeyboardButton(label, url=url)])
         else:
-            # Private channel with no invite link stored; show placeholder
-            keyboard.append([InlineKeyboardButton(
-                f"⚠️ {title} (contact admin for link)", callback_data="noop"
-            )])
+            # No link yet — show as non-tappable so the list is still complete
+            keyboard.append([InlineKeyboardButton(f"{label} ⚠️", callback_data="noop")])
 
-    keyboard.append([bold_button("♻️ Try Again", callback_data="verify_subscription")])
-    keyboard.append([bold_button("Help", callback_data="user_help")])
+    keyboard.append([bold_button("♻️ ᴛʀʏ ᴀɢᴀɪɴ", callback_data="verify_subscription")])
     markup = InlineKeyboardMarkup(keyboard)
 
+    # ── Delivery: photo if configured, pure text otherwise ────────────────────
     try:
-        if update.callback_query:
-            await safe_edit_text(update.callback_query, text, reply_markup=markup)
-        elif update.message:
-            await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
-        elif update.effective_chat:
-            await safe_send_message(context.bot, update.effective_chat.id, text, reply_markup=markup)
-    except Exception as exc:
-        logger.debug(f"_send_force_sub_screen error: {exc}")
+        fsub_photo = get_setting("fsub_photo", "") or ""
+    except Exception:
+        fsub_photo = ""
+
+    chat_id = update.effective_chat.id if update.effective_chat else user_id
+    query   = update.callback_query   # may be None
+
+    async def _try_send_photo() -> bool:
+        """Return True on success."""
+        try:
+            if query:
+                # Edit existing message in-place if it already has a photo
+                if getattr(query.message, "photo", None) or getattr(query.message, "document", None):
+                    from telegram import InputMediaPhoto
+                    await query.message.edit_media(
+                        InputMediaPhoto(media=fsub_photo, caption=caption,
+                                        parse_mode=ParseMode.HTML),
+                        reply_markup=markup,
+                    )
+                    return True
+                # Otherwise delete the old message and send a fresh photo
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                await context.bot.send_photo(
+                    chat_id=chat_id, photo=fsub_photo, caption=caption,
+                    parse_mode=ParseMode.HTML, reply_markup=markup,
+                )
+                return True
+            elif update.message:
+                await update.message.reply_photo(
+                    photo=fsub_photo, caption=caption,
+                    parse_mode=ParseMode.HTML, reply_markup=markup,
+                )
+                return True
+            else:
+                await context.bot.send_photo(
+                    chat_id=chat_id, photo=fsub_photo, caption=caption,
+                    parse_mode=ParseMode.HTML, reply_markup=markup,
+                )
+                return True
+        except Exception as _pe:
+            logger.debug(f"[fsub] photo send failed: {_pe}")
+            return False
+
+    async def _send_text() -> None:
+        """Send or edit as plain text — always works."""
+        if query:
+            try:
+                # If current message is a photo we must delete+resend (can't edit to text)
+                if getattr(query.message, "photo", None):
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=caption,
+                        parse_mode=ParseMode.HTML, reply_markup=markup,
+                    )
+                    return
+                await safe_edit_text(query, caption, reply_markup=markup)
+                return
+            except Exception as _te:
+                logger.debug(f"[fsub] text edit failed: {_te}")
+        if update.message:
+            await update.message.reply_text(
+                caption, parse_mode=ParseMode.HTML, reply_markup=markup,
+            )
+        else:
+            await safe_send_message(context.bot, chat_id, caption, reply_markup=markup)
+
+    # Try photo first if configured; fall back to text silently
+    if fsub_photo:
+        ok = await _try_send_photo()
+        if not ok:
+            await _send_text()
+    else:
+        await _send_text()
 
 
 def force_sub_required(func: Callable) -> Callable:
@@ -303,15 +382,7 @@ def force_sub_required(func: Callable) -> Callable:
             await send_maintenance_block(update, context)
             return
 
-        # For "Try Again" button: bypass JBR channels so a user who has
-        # sent a join request (which we cannot verify via Bot API) can proceed.
-        is_verify_action = bool(
-            update.callback_query and
-            (update.callback_query.data or "").strip() == "verify_subscription"
-        )
-        unsubscribed = await get_unsubscribed_channels(
-            uid, context.bot, skip_jbr=is_verify_action
-        )
+        unsubscribed = await get_unsubscribed_channels(uid, context.bot)
         if unsubscribed:
             await _send_force_sub_screen(update, context, unsubscribed, uid)
             return
