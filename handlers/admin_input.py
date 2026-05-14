@@ -117,6 +117,7 @@ async def handle_admin_message(
             context.user_data["new_ch_title"]      = tg_chat.title
             context.user_data["new_ch_is_private"] = is_private
             context.user_data["new_ch_jbr"]        = False  # default; admin can pick later
+            context.user_data["new_ch_id"]         = tg_chat.id  # numeric chat ID for JBR lookup
             user_states[uid] = ADD_CHANNEL_TITLE
             ch_info = f"<b>Channel:</b> {e(tg_chat.title)}\n<b>ID:</b> <code>{tg_chat.id}</code>"
             if tg_chat.username:
@@ -165,6 +166,7 @@ async def handle_admin_message(
         # Also read the stored join_by_request flag if set by ADD_CHANNEL_USERNAME.
         join_by_request = bool(context.user_data.pop("new_ch_jbr", False))
         stored_invite   = context.user_data.pop("new_ch_invite_link", None) or ""
+        channel_id_int  = context.user_data.pop("new_ch_id", None)
         is_private      = uname.lstrip("-").isdigit()
 
         # For private channels with no stored invite link, generate one now.
@@ -186,6 +188,7 @@ async def handle_admin_message(
             uname, title,
             join_by_request=join_by_request,
             invite_link=stored_invite or None,
+            channel_id=channel_id_int,
         )
         jbr_note = " (🔔 Join-Request mode)" if join_by_request else ""
         link_note = f"\n<i>Invite link stored.</i>" if stored_invite else (
