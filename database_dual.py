@@ -223,7 +223,18 @@ def _migrate_pg() -> None:
                 channel_username TEXT PRIMARY KEY,
                 channel_title TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
-                join_by_request BOOLEAN DEFAULT FALSE
+                join_by_request BOOLEAN DEFAULT FALSE,
+                invite_link TEXT,
+                channel_id BIGINT
+            )""")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fsub_join_requests (
+                user_id          BIGINT NOT NULL,
+                channel_username TEXT   NOT NULL,
+                channel_id       BIGINT,
+                requested_at     TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (user_id, channel_username)
             )""")
 
         cur.execute("""
@@ -427,6 +438,7 @@ def _migrate_pg() -> None:
             "DO $$ BEGIN ALTER TABLE generated_links ADD COLUMN source_bot_username TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN join_by_request BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN invite_link TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
+            "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN channel_id BIGINT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE bot_progress ADD COLUMN anime_name TEXT DEFAULT 'Anime Name'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
             "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN blacklist_words TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
@@ -671,23 +683,32 @@ def is_user_banned(user_id: int) -> bool:
 
 def add_force_sub_channel(channel_username: str, channel_title: str,
                            join_by_request: bool = False,
-                           invite_link: str = None) -> bool:
+                           invite_link: str = None,
+                           channel_id: int = None) -> bool:
+    """
+    channel_username : @handle or str(numeric_id)
+    channel_id       : numeric Telegram chat ID (BIGINT) — used for reliable
+                       lookup when auto-approving join requests by chat.id
+    """
     ok = _pg_run("""
         INSERT INTO force_sub_channels
-            (channel_username, channel_title, is_active, join_by_request, invite_link)
-        VALUES (%s, %s, TRUE, %s, %s)
+            (channel_username, channel_title, is_active, join_by_request, invite_link, channel_id)
+        VALUES (%s, %s, TRUE, %s, %s, %s)
         ON CONFLICT (channel_username) DO UPDATE
-            SET channel_title = EXCLUDED.channel_title,
-                is_active = TRUE,
-                join_by_request = EXCLUDED.join_by_request,
-                invite_link = COALESCE(EXCLUDED.invite_link, force_sub_channels.invite_link)
-    """, (channel_username, channel_title, join_by_request, invite_link))
+            SET channel_title    = EXCLUDED.channel_title,
+                is_active        = TRUE,
+                join_by_request  = EXCLUDED.join_by_request,
+                invite_link      = COALESCE(EXCLUDED.invite_link, force_sub_channels.invite_link),
+                channel_id       = COALESCE(EXCLUDED.channel_id,  force_sub_channels.channel_id)
+    """, (channel_username, channel_title, join_by_request, invite_link, channel_id))
     if _MG.db is not None:
         try:
             doc = {"channel_username": channel_username, "channel_title": channel_title,
                    "is_active": True, "join_by_request": join_by_request}
             if invite_link:
                 doc["invite_link"] = invite_link
+            if channel_id:
+                doc["channel_id"] = channel_id
             _MG.db.force_sub_channels.update_one(
                 {"channel_username": channel_username},
                 {"$set": doc},
@@ -713,6 +734,89 @@ def update_force_sub_invite_link(channel_username: str, invite_link: str) -> boo
         except Exception:
             pass
     return ok
+
+# ── FSub join-request tracking ────────────────────────────────────────────────
+
+def record_fsub_join_request(user_id: int, channel_username: str,
+                              channel_id: int = None) -> bool:
+    """
+    Store the fact that *user_id* sent a join request to *channel_username*.
+    Called by the ChatJoinRequest handler so the user is not shown that JBR
+    channel again on their next interaction.
+    """
+    ok = _pg_run("""
+        INSERT INTO fsub_join_requests (user_id, channel_username, channel_id)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, channel_username) DO UPDATE
+            SET requested_at = NOW(),
+                channel_id   = COALESCE(EXCLUDED.channel_id,
+                                        fsub_join_requests.channel_id)
+    """, (user_id, channel_username, channel_id))
+    if _MG.db is not None:
+        try:
+            _MG.db.fsub_join_requests.update_one(
+                {"user_id": user_id, "channel_username": channel_username},
+                {"$set": {"user_id": user_id, "channel_username": channel_username,
+                           "channel_id": channel_id}},
+                upsert=True,
+            )
+        except Exception:
+            pass
+    return ok
+
+
+def has_fsub_join_request(user_id: int, channel_username: str,
+                           channel_id: int = None) -> bool:
+    """
+    Return True if *user_id* has previously sent a join request to this channel.
+    Looks up by channel_username first, then by numeric channel_id (fallback).
+    """
+    row = _pg_exec("""
+        SELECT 1 FROM fsub_join_requests
+        WHERE user_id = %s AND channel_username = %s
+        LIMIT 1
+    """, (user_id, channel_username))
+    if row:
+        return True
+
+    # Fallback: match by numeric channel_id stored in the requests table
+    if channel_id:
+        row = _pg_exec("""
+            SELECT 1 FROM fsub_join_requests
+            WHERE user_id = %s AND channel_id = %s
+            LIMIT 1
+        """, (user_id, channel_id))
+        if row:
+            return True
+
+    if _MG.db is not None:
+        try:
+            q = {"user_id": user_id}
+            if channel_id:
+                q = {"user_id": user_id,
+                     "$or": [{"channel_username": channel_username},
+                              {"channel_id": channel_id}]}
+            else:
+                q["channel_username"] = channel_username
+            return _MG.db.fsub_join_requests.find_one(q) is not None
+        except Exception:
+            pass
+    return False
+
+
+def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
+    """Remove the stored request (called after user is fully approved/joined)."""
+    _pg_run(
+        "DELETE FROM fsub_join_requests WHERE user_id = %s AND channel_username = %s",
+        (user_id, channel_username),
+    )
+    if _MG.db is not None:
+        try:
+            _MG.db.fsub_join_requests.delete_one(
+                {"user_id": user_id, "channel_username": channel_username}
+            )
+        except Exception:
+            pass
 
 
 def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
@@ -759,20 +863,49 @@ def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
 
 
 def get_force_sub_channel_info(channel_username: str) -> Optional[tuple]:
+    """
+    Lookup a force-sub channel entry.
+    Accepts @username, bare username, or str(numeric_chat_id).
+    Returns 3-tuple (username, title, jbr) or None.
+    """
+    # Try exact username match first
     row = _pg_exec("""
         SELECT channel_username, channel_title, COALESCE(join_by_request, FALSE)
         FROM force_sub_channels WHERE channel_username = %s AND is_active = TRUE
     """, (channel_username,))
     if row:
         return row
+
+    # Try matching by stored numeric channel_id (handles @username stored channels
+    # when looked up by req.chat.id which is always a numeric int)
+    try:
+        numeric_id = int(channel_username)
+        row = _pg_exec("""
+            SELECT channel_username, channel_title, COALESCE(join_by_request, FALSE)
+            FROM force_sub_channels
+            WHERE channel_id = %s AND is_active = TRUE
+        """, (numeric_id,))
+        if row:
+            return row
+    except (ValueError, TypeError):
+        pass
+
     if _MG.db is not None:
         try:
             doc = _MG.db.force_sub_channels.find_one(
                 {"channel_username": channel_username, "is_active": True}
             )
+            if not doc:
+                # Try numeric ID in mongo too
+                try:
+                    doc = _MG.db.force_sub_channels.find_one(
+                        {"channel_id": int(channel_username), "is_active": True}
+                    )
+                except (ValueError, TypeError):
+                    pass
             if doc:
                 return (doc.get("channel_username"), doc.get("channel_title"),
-                        doc.get("join_by_request", False))
+                        bool(doc.get("join_by_request", False)))
         except Exception:
             pass
     return None
