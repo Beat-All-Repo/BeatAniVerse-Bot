@@ -237,14 +237,29 @@ async def auto_approve_join_request(
 
     try:
         from database_dual import (
-            get_force_sub_channel_info, get_setting, get_all_links
+            get_force_sub_channel_info, get_all_force_sub_channels,
+            get_setting, get_all_links,
         )
         should_approve = False
 
-        # 3a — Force-sub channel with join-by-request enabled
+        # 3a — Lookup by numeric chat.id (get_force_sub_channel_info now checks
+        #       both channel_username and the stored channel_id BIGINT column)
         ch_info = get_force_sub_channel_info(str(req.chat.id))
-        if ch_info and ch_info[2]:
+        if ch_info and ch_info[2]:   # ch_info[2] = join_by_request flag
             should_approve = True
+
+        # 3a-fallback — scan ALL force-sub channels looking for any JBR entry
+        #               whose username matches @chat.username (for channels added
+        #               before the channel_id column existed)
+        if not should_approve and req.chat.username:
+            all_chs = get_all_force_sub_channels(return_usernames_only=False)
+            for row in (all_chs or []):
+                stored_uname = (row[0] or "").lstrip("@").lower()
+                req_uname    = (req.chat.username or "").lstrip("@").lower()
+                jbr_flag     = bool(row[2]) if len(row) > 2 else False
+                if stored_uname == req_uname and jbr_flag:
+                    should_approve = True
+                    break
 
         # 3b — Global auto_approve_join_requests setting
         if not should_approve:
@@ -270,6 +285,17 @@ async def auto_approve_join_request(
         if not should_approve:
             return
 
+        # ── Record join request in DB immediately ─────────────────────────────
+        # This lets get_unsubscribed_channels skip this JBR channel for the user
+        # on their next interaction, even before the approval completes.
+        try:
+            from database_dual import record_fsub_join_request
+            ch_uname = (req.chat.username and f"@{req.chat.username}") or str(req.chat.id)
+            record_fsub_join_request(req.from_user.id, ch_uname, channel_id=req.chat.id)
+            logger.debug(f"[approve] 📝 recorded request: user={req.from_user.id} ch={ch_uname}")
+        except Exception as _rec_err:
+            logger.debug(f"[approve] record_request failed: {_rec_err}")
+
         # 4 — Configurable wait before approving (prevents abuse detection)
         wait_secs = _get_approval_wait()
         if wait_secs > 0:
@@ -278,6 +304,13 @@ async def auto_approve_join_request(
         # Approve
         await context.bot.approve_chat_join_request(req.chat.id, req.from_user.id)
         logger.debug(f"[approve] ✅ approved {req.from_user.id} in {req.chat.id}")
+
+        # ── Clean up stored request — user is now a full member ───────────────
+        try:
+            from database_dual import clear_fsub_join_request
+            clear_fsub_join_request(req.from_user.id, ch_uname)
+        except Exception:
+            pass
 
         # 5 — Send welcome photo DM
         try:
@@ -454,3 +487,174 @@ async def cmd_approve_status(update: Update, context: ContextTypes.DEFAULT_TYPE)
         + b("Per-channel approval OFF:") + "\n" + off_text
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FSub management commands  (/addfsub  /delfsub  /fsublist)
+# Ported from Beat-Channel-Join-Advanced, adapted for python-telegram-bot
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def cmd_addfsub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /addfsub <channel_id|@username>  [jbr]
+    Add a channel to the force-subscription list.
+    Append 'jbr' to enable join-by-request mode for private channels.
+    Examples:
+      /addfsub @mychannel
+      /addfsub -1001234567890 jbr
+    """
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            b("Usage:") + "\n"
+            + "<code>/addfsub @username</code>\n"
+            + "<code>/addfsub -1001234567890</code>\n"
+            + "<code>/addfsub -1001234567890 jbr</code>  ← join-request mode",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    raw       = args[0].strip()
+    jbr_mode  = len(args) >= 2 and args[1].lower() == "jbr"
+
+    # Resolve the channel
+    try:
+        tg_chat = await context.bot.get_chat(raw if raw.startswith("@") else int(raw))
+    except Exception as exc:
+        await update.message.reply_text(
+            f"❌ Cannot find channel <code>{e(raw)}</code>.\n\n"
+            f"Make sure the bot is an admin there.\n<i>{e(str(exc))}</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Confirm bot is admin
+    try:
+        me      = await context.bot.get_me()
+        bot_mem = await context.bot.get_chat_member(tg_chat.id, me.id)
+        if bot_mem.status not in ("administrator", "creator"):
+            await update.message.reply_text(
+                f"❌ I must be an <b>admin</b> in <b>{e(tg_chat.title)}</b> to add it as an fsub channel.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    except Exception:
+        pass  # Can't check membership — proceed anyway
+
+    is_private   = not tg_chat.username
+    stored_uname = f"@{tg_chat.username}" if tg_chat.username else str(tg_chat.id)
+    invite_link  = ""
+
+    # Auto-generate invite link for private channels
+    if is_private:
+        try:
+            if jbr_mode:
+                lnk = await context.bot.create_chat_invite_link(
+                    tg_chat.id, creates_join_request=True
+                )
+            else:
+                lnk = await context.bot.export_chat_invite_link(tg_chat.id)
+            invite_link = getattr(lnk, "invite_link", lnk) or ""
+        except Exception as _le:
+            logger.debug(f"[addfsub] invite link gen failed: {_le}")
+
+    from database_dual import add_force_sub_channel
+    add_force_sub_channel(
+        stored_uname,
+        tg_chat.title,
+        join_by_request=jbr_mode,
+        invite_link=invite_link or None,
+        channel_id=tg_chat.id,
+    )
+
+    jbr_note   = " <b>(🔔 Join-Request mode)</b>" if jbr_mode else ""
+    link_note  = "\n<i>✅ Invite link stored.</i>" if invite_link else (
+        "\n<i>⚠️ No invite link — use /addfsub after making bot admin.</i>"
+        if is_private else ""
+    )
+    type_label = "Private" if is_private else "Public"
+
+    await update.message.reply_text(
+        f"✅ <b>Force-sub channel added!</b>\n\n"
+        f"<b>Title:</b> {e(tg_chat.title)}\n"
+        f"<b>ID:</b> <code>{tg_chat.id}</code>\n"
+        f"<b>Type:</b> {type_label}{jbr_note}"
+        f"{link_note}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_delfsub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /delfsub <channel_id|@username>
+    Remove a channel from the force-subscription list.
+    """
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            b("Usage:") + " <code>/delfsub @username</code>  or  <code>/delfsub -100123456</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    raw = args[0].strip()
+    from database_dual import delete_force_sub_channel, get_all_force_sub_channels
+
+    # Resolve display name
+    display = raw
+    try:
+        tg_chat = await context.bot.get_chat(raw if raw.startswith("@") else int(raw))
+        display = tg_chat.title or raw
+        # Normalise to stored key
+        stored_uname = f"@{tg_chat.username}" if tg_chat.username else str(tg_chat.id)
+    except Exception:
+        stored_uname = raw
+
+    delete_force_sub_channel(stored_uname)
+    await update.message.reply_text(
+        f"✅ Removed <b>{e(display)}</b> (<code>{e(stored_uname)}</code>) from force-sub list.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_fsublist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    /fsublist
+    List all active force-subscription channels with their mode.
+    """
+    from database_dual import get_all_force_sub_channels
+
+    channels = get_all_force_sub_channels(return_usernames_only=False)
+    if not channels:
+        await update.message.reply_text(
+            " <b>No force-sub channels configured.</b>\n\n"
+            "Use <code>/addfsub @username</code> to add one.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    lines = [b("📋 Force-Sub Channels") + "\n"]
+    for i, row in enumerate(channels, 1):
+        uname       = row[0] if len(row) > 0 else "?"
+        title       = row[1] if len(row) > 1 else uname
+        jbr         = bool(row[2]) if len(row) > 2 else False
+        invite_link = row[3] if len(row) > 3 else ""
+
+        mode_badge  = "  <i>JBR</i>"  if jbr else " 📢 <i>Direct</i>"
+        link_badge  = " ✅ link stored"  if invite_link else ""
+        # Try to resolve current title from Telegram (best-effort)
+        try:
+            ch = await context.bot.get_chat(int(uname) if uname.lstrip("-").isdigit() else uname)
+            title = ch.title or title
+        except Exception:
+            pass
+
+        lines.append(
+            f"\n<b>{i}.</b> {e(title)}{mode_badge}{link_badge}\n"
+            f"   ID: <code>{e(uname)}</code>"
+        )
+
+    lines.append(
+        "\n\n<i>Commands: /addfsub  /delfsub  /reqmode  /reqtime  /approvestatus</i>"
+    )
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
