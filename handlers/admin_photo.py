@@ -273,8 +273,9 @@ async def handle_admin_photo(
             context.user_data["new_ch_uname"] = (
                 str(tg_chat.id) if is_private else f"@{tg_chat.username}"
             )
-            context.user_data["new_ch_title"] = tg_chat.title
+            context.user_data["new_ch_title"]      = tg_chat.title
             context.user_data["new_ch_is_private"] = is_private
+            context.user_data["new_ch_id"]         = tg_chat.id  # numeric ID for JBR auto-approve lookup
             user_states[uid] = ADD_CHANNEL_TITLE
 
             # Detect if the channel uses join-by-request (linked_chat has requests enabled).
