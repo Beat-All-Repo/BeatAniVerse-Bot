@@ -62,10 +62,10 @@ def _build_panel_pages(maint: bool, clone_red: bool, clean_gc: bool):
     def _nav(cur):
         row = []
         if cur > 0:
-            row.append(InlineKeyboardButton("◀", callback_data=f"adm_page_{cur-1}"))
+            row.append(InlineKeyboardButton("🔙", callback_data=f"adm_page_{cur-1}"))
         row.append(InlineKeyboardButton(f"· {cur+1}/{TOTAL} ·", callback_data="noop"))
         if cur < TOTAL - 1:
-            row.append(InlineKeyboardButton("▶", callback_data=f"adm_page_{cur+1}"))
+            row.append(InlineKeyboardButton(🔜", callback_data=f"adm_page_{cur+1}"))
         row.append(_close_btn())
         return row
 
