@@ -356,6 +356,11 @@ def _register_all_handlers(app: Application) -> None:
 
     # Join requests
     app.add_handler(ChatJoinRequestHandler(auto_approve_join_request))
+
+    # ── Chat member updates: remove from JBR whitelist when user leaves ──────
+    from handlers.channels import handle_chat_member_left
+    from telegram.ext import ChatMemberHandler
+    app.add_handler(ChatMemberHandler(handle_chat_member_left, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(MessageHandler(
         filters.StatusUpdate.NEW_CHAT_MEMBERS, channel_welcome_join_handler
     ))
