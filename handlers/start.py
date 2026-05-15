@@ -318,11 +318,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await handle_deep_link(update, context, link_id)
         return
 
-    # ── Regular /start: sticker only, no loading animation ───────────────────
-    if uid not in (ADMIN_ID, OWNER_ID):
-        await send_transition_sticker(context, chat_id)
-
-    # Admin panel
+    # Admin panel  (transition sticker is sent by _send_fire_animation below — not here)
     if uid in (ADMIN_ID, OWNER_ID):
         user_states.pop(uid, None)
         from handlers.admin_panel import send_admin_menu
