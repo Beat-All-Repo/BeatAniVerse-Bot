@@ -208,14 +208,13 @@ async def auto_approve_join_request(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """
-    Auto-approve chat join requests.
+    ChatJoinRequest handler — exact logic from Advance-File-Share-bot (PTB port).
 
-    Logic (mirrors BCJ bot):
-      1. Global toggle — if /reqmode off, do nothing.
-      2. Per-channel toggle — if /approveoff <id> was used, skip that channel.
-      3. Original force-sub JBR mode OR global setting OR linked channel check.
-      4. Wait APPROVAL_WAIT_TIME seconds (configurable via /reqtime).
-      5. Approve, then send welcome photo DM.
+    Step 1 — Check if this channel is a JBR force-sub channel.
+             Scan by numeric chat.id (reliable) + username fallback.
+    Step 2 — If yes: record user in whitelist DB immediately.
+             This is what makes "Try Again" work — is_sub() checks this table.
+    Step 3 — Auto-approve if reqmode is ON and per-channel toggle allows it.
     """
     global _AUTO_APPROVE_ENABLED
 
@@ -223,97 +222,100 @@ async def auto_approve_join_request(
     if not req:
         return
 
-    # 1 — Global toggle
+    chat_id = req.chat.id
+    user_id = req.from_user.id
+
+    # ── Step 1: Is this a JBR fsub channel? ──────────────────────────────────
+    # Mirrors: reqChannel_exist(chat_id) from reference bot
+    # We scan all channels and match by numeric ID — the only reliable method.
+    is_jbr_fsub = False
+    try:
+        from database_dual import get_all_force_sub_channels, record_fsub_join_request
+        all_chs = get_all_force_sub_channels(return_usernames_only=False)
+        for row in (all_chs or []):
+            stored_uname = (row[0] or "").strip()
+            jbr_flag     = bool(row[2]) if len(row) > 2 else False
+            stored_ch_id = row[4] if len(row) > 4 else None  # numeric channel_id column
+
+            if not jbr_flag:
+                continue  # only care about JBR channels
+
+            # Match by stored numeric channel_id
+            if stored_ch_id is not None:
+                try:
+                    if int(stored_ch_id) == chat_id:
+                        is_jbr_fsub = True
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+            # Match by parsing channel_username as numeric ID
+            # (covers channels added before channel_id column was populated)
+            try:
+                if int(stored_uname.lstrip("@")) == chat_id:
+                    is_jbr_fsub = True
+                    break
+            except (ValueError, TypeError):
+                pass
+
+            # Match by @username (public JBR channels)
+            if req.chat.username:
+                req_u  = req.chat.username.lstrip("@").lower()
+                stor_u = stored_uname.lstrip("@").lower()
+                if req_u and req_u == stor_u:
+                    is_jbr_fsub = True
+                    break
+    except Exception as _se:
+        logger.debug(f"[jbr] channel scan error: {_se}")
+
+    # ── Step 2: Whitelist user immediately (THE key fix) ─────────────────────
+    # Mirrors: db.req_user(chat_id, user_id) from reference bot
+    # Stored by numeric chat_id. is_sub() will find it on the next check.
+    if is_jbr_fsub:
+        try:
+            record_fsub_join_request(chat_id, user_id)
+            logger.debug(f"[jbr] ✅ whitelisted user={user_id} ch={chat_id}")
+        except Exception as _re:
+            logger.debug(f"[jbr] whitelist write failed: {_re}")
+
+    # ── Step 3: Auto-approve (only if reqmode ON and not toggled off) ─────────
     if _approval_off_channels is None:
         _load_approval_settings()
     if not _AUTO_APPROVE_ENABLED:
-        logger.debug(f"[approve] global OFF — skipping {req.from_user.id}")
         return
-
-    # 2 — Per-channel toggle
-    if _is_approval_off(req.chat.id):
-        logger.debug(f"[approve] channel {req.chat.id} approval OFF — skipping")
+    if _is_approval_off(chat_id):
         return
 
     try:
-        from database_dual import (
-            get_force_sub_channel_info, get_all_force_sub_channels,
-            get_setting, get_all_links,
-        )
-        should_approve = False
+        from database_dual import get_setting, get_all_links
+        should_approve = is_jbr_fsub  # JBR fsub channels are always approved
 
-        # 3a — Lookup by numeric chat.id (get_force_sub_channel_info now checks
-        #       both channel_username and the stored channel_id BIGINT column)
-        ch_info = get_force_sub_channel_info(str(req.chat.id))
-        if ch_info and ch_info[2]:   # ch_info[2] = join_by_request flag
-            should_approve = True
-
-        # 3a-fallback — scan ALL force-sub channels looking for any JBR entry
-        #               whose username matches @chat.username (for channels added
-        #               before the channel_id column existed)
-        if not should_approve and req.chat.username:
-            all_chs = get_all_force_sub_channels(return_usernames_only=False)
-            for row in (all_chs or []):
-                stored_uname = (row[0] or "").lstrip("@").lower()
-                req_uname    = (req.chat.username or "").lstrip("@").lower()
-                jbr_flag     = bool(row[2]) if len(row) > 2 else False
-                if stored_uname == req_uname and jbr_flag:
-                    should_approve = True
-                    break
-
-        # 3b — Global auto_approve_join_requests setting
+        # Also approve for global setting or generated-link channels
         if not should_approve:
             jbr_global = (get_setting("auto_approve_join_requests", "false") or "false").lower() == "true"
             if jbr_global:
                 should_approve = True
-
-        # 3c — Channel appears in generated links DB
         if not should_approve:
             try:
                 raw = get_all_links(limit=500, offset=0)
-                linked_ids = set()
-                for row in (raw or []):
-                    try:
-                        linked_ids.add(int(row[1]))
-                    except (ValueError, TypeError):
-                        pass
-                if req.chat.id in linked_ids:
+                linked_ids = {int(r[1]) for r in (raw or []) if r and r[1]}
+                if chat_id in linked_ids:
                     should_approve = True
             except Exception:
                 pass
 
-        # ── Step A: Whitelist immediately (reference-bot pattern) ───────────────
-        # Record join request as soon as it arrives — BEFORE any gate.
-        # is_sub() will see this record and let the user through on next check.
-        # This is the core of the reference bot's JBR logic.
-        _ch_is_jbr = (
-            (ch_info is not None and bool(ch_info[2]))  # from DB lookup by id
-            or should_approve                            # found via username fallback
-        )
-        if _ch_is_jbr:
-            try:
-                from database_dual import record_fsub_join_request
-                record_fsub_join_request(req.chat.id, req.from_user.id)
-                logger.debug(f"[jbr] ✅ whitelisted user={req.from_user.id} ch={req.chat.id}")
-            except Exception as _re:
-                logger.debug(f"[jbr] whitelist failed: {_re}")
-
         if not should_approve:
             return
 
-        # ── Step B: Auto-approve (optional, controlled by reqmode) ────────────
-        # 4 — Configurable wait before approving (prevents abuse detection)
         wait_secs = _get_approval_wait()
         if wait_secs > 0:
             await asyncio.sleep(wait_secs)
 
         try:
-            await context.bot.approve_chat_join_request(req.chat.id, req.from_user.id)
-            logger.debug(f"[approve] ✅ approved {req.from_user.id} in {req.chat.id}")
-            # After approval user is a full MEMBER — whitelist entry no longer needed
-            # but we leave it; it does no harm and avoids a DB write on every approval.
+            await context.bot.approve_chat_join_request(chat_id, user_id)
+            logger.debug(f"[approve] ✅ approved user={user_id} ch={chat_id}")
         except Exception as _ae:
-            logger.debug(f"[approve] approve failed (already approved?): {_ae}")
+            logger.debug(f"[approve] approve call failed (may already be approved): {_ae}")
 
         # 5 — Send welcome photo DM
         try:
