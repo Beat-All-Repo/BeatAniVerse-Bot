@@ -73,6 +73,16 @@ async def post_init(application: Application) -> None:
         asyncio.create_task(scan_panel_channel(application.bot))
         logger.info(f"✅ Panel image scan scheduled from channel {_scan_target}")
 
+    # Sync JBR whitelist: clean up stale entries for users now fully approved
+    async def _jbr_sync_task():
+        try:
+            from handlers.channels import sync_jbr_whitelist_on_startup
+            await sync_jbr_whitelist_on_startup(application.bot)
+        except Exception as _je:
+            logger.debug(f"JBR whitelist sync error (non-fatal): {_je}")
+    asyncio.create_task(_jbr_sync_task())
+    logger.info("✅ JBR whitelist sync task scheduled")
+
     # Schedule background jobs
     if application.job_queue:
         from jobs.scheduled import (
