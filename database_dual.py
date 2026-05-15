@@ -2052,3 +2052,60 @@ def get_top_search_analytics(limit: int = 10) -> list:
         return [(r[0], int(r[1])) for r in (rows or [])]
     except Exception:
         return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  PERSISTENT MESSAGE DELETE QUEUE
+#  Survives bot restarts — used by filter_poster GC auto-delete
+# ─────────────────────────────────────────────────────────────────────────────
+
+def ensure_pending_deletes_table() -> None:
+    """Create pending_message_deletes table if it doesn't exist."""
+    _pg_run("""
+        CREATE TABLE IF NOT EXISTS pending_message_deletes (
+            id SERIAL PRIMARY KEY,
+            chat_id  BIGINT NOT NULL,
+            message_id BIGINT NOT NULL,
+            delete_at  TIMESTAMP NOT NULL
+        )
+    """)
+
+
+def save_pending_delete(chat_id: int, message_id: int, delay_seconds: int) -> None:
+    """Persist a scheduled message deletion so it survives restarts."""
+    try:
+        from datetime import datetime, timedelta
+        delete_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
+        _pg_run(
+            "INSERT INTO pending_message_deletes (chat_id, message_id, delete_at) "
+            "VALUES (%s, %s, %s)",
+            (chat_id, message_id, delete_at),
+        )
+    except Exception:
+        pass
+
+
+def remove_pending_delete(chat_id: int, message_id: int) -> None:
+    """Remove a deletion record once the message has been deleted."""
+    try:
+        _pg_run(
+            "DELETE FROM pending_message_deletes WHERE chat_id=%s AND message_id=%s",
+            (chat_id, message_id),
+        )
+    except Exception:
+        pass
+
+
+def pop_due_pending_deletes() -> list:
+    """
+    Atomically fetch-and-delete all rows whose delete_at <= now.
+    Returns list of (chat_id, message_id) tuples ready to be deleted.
+    """
+    try:
+        rows = _pg_exec_all(
+            "DELETE FROM pending_message_deletes WHERE delete_at <= NOW() "
+            "RETURNING chat_id, message_id"
+        )
+        return [(int(r[0]), int(r[1])) for r in (rows or [])]
+    except Exception:
+        return []
