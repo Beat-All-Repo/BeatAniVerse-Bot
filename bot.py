@@ -216,7 +216,7 @@ def _register_all_handlers(app: Application) -> None:
     ), group=6)
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS
-        & filters.Regex(r'(?i)^(hey|hi|hello|bot|@)'),
+        & (filters.Regex(r'(?i)(hey|hi|hello|bot|@)') | filters.REPLY),
         chatbot_group_handler
     ), group=7)
 
