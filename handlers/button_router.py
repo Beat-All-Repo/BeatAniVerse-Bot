@@ -216,6 +216,12 @@ async def button_handler(
         return
 
     if data == "verify_subscription":
+        # Fsub decorator already verified user passes all channels to reach here.
+        # Delete the fsub panel and show the start welcome panel cleanly.
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
         from handlers.start import start
         await start(update, context)
         return
