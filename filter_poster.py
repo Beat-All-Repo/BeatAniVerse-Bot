@@ -369,10 +369,24 @@ async def _make_expirable_link(bot: Any, expiry_minutes: int) -> Optional[str]:
 async def _auto_delete(bot: Any, chat_id: int, *message_ids: int, delay: int = 300) -> None:
     if delay <= 0:
         return
+    # Persist each deletion to DB immediately — survives restarts
+    try:
+        from database_dual import save_pending_delete
+        for mid in message_ids:
+            save_pending_delete(chat_id, mid, delay)
+    except Exception:
+        pass
     await asyncio.sleep(delay)
     for mid in message_ids:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=mid)
+        except Exception:
+            pass
+        # Remove DB record whether or not the deletion succeeded
+        # (message is either gone or already deleted by the recovery job)
+        try:
+            from database_dual import remove_pending_delete
+            remove_pending_delete(chat_id, mid)
         except Exception:
             pass
 
