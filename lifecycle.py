@@ -90,10 +90,12 @@ async def post_init(application: Application) -> None:
             cleanup_expired_links_job,
             check_scheduled_broadcasts,
             _prewarm_all_caches,
+            recover_pending_deletes_job,
         )
-        application.job_queue.run_repeating(manga_update_job,           interval=3600, first=180)
-        application.job_queue.run_repeating(cleanup_expired_links_job,  interval=600,  first=90)
-        application.job_queue.run_repeating(check_scheduled_broadcasts, interval=60,   first=180)
+        application.job_queue.run_repeating(manga_update_job,             interval=3600, first=180)
+        application.job_queue.run_repeating(cleanup_expired_links_job,    interval=600,  first=90)
+        application.job_queue.run_repeating(check_scheduled_broadcasts,   interval=60,   first=180)
+        application.job_queue.run_repeating(recover_pending_deletes_job,  interval=60,   first=30)
         logger.info("✅ Background jobs scheduled")
 
     # Migrate poster_cache table
@@ -103,6 +105,14 @@ async def post_init(application: Application) -> None:
         logger.info("✅ poster_cache table ready")
     except Exception as _e:
         logger.warning(f"poster_cache migration: {_e}")
+
+    # Create pending message deletes table (persistent GC delete queue)
+    try:
+        from database_dual import ensure_pending_deletes_table
+        ensure_pending_deletes_table()
+        logger.info("✅ pending_message_deletes table ready")
+    except Exception as _e:
+        logger.warning(f"pending_deletes table migration: {_e}")
 
     # Migrate search analytics table
     try:
