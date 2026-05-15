@@ -61,34 +61,44 @@ async def _is_sub_single(bot: Bot, user_id: int,
                           uname: str, ch_id: Optional[int],
                           jbr: bool) -> bool:
     """
-    Exact port of is_sub() from Advance-File-Share-bot:
+    Exact port of is_sub() from Advance-File-Share-bot (request_fsub.py / helper_func.py):
 
-    1. Try get_chat_member.
-       - If status is MEMBER / ADMIN / OWNER / RESTRICTED → subscribed ✅
-       - If status is LEFT / KICKED:
-           • If channel is JBR mode → check DB whitelist (has_fsub_join_request)
-           • Otherwise → not subscribed ❌
-    2. If get_chat_member raises any error:
-       - If JBR mode → check DB whitelist (bot might not be admin)
-       - Otherwise → not subscribed (safe default)
+    1. Try get_chat_member(channel_id, user_id).
+       - status MEMBER / ADMIN / OWNER / RESTRICTED → True ✅
+       - status LEFT / KICKED:
+           • JBR mode → check DB whitelist (req_user_exist equivalent) → True if found
+           • Direct mode → False ❌
+    2. If get_chat_member raises (private channel, bot not admin, etc.):
+       - JBR mode → check DB whitelist (give benefit of doubt)
+       - Direct mode → False ❌
     """
     from database_dual import has_fsub_join_request
 
+    # Always use numeric channel_id for get_chat_member — most reliable
     lookup = ch_id if ch_id else uname
     try:
         member = await bot.get_chat_member(chat_id=lookup, user_id=user_id)
-        if member.status not in ("left", "kicked"):
-            return True
-        # status is left/kicked
-        if jbr:
-            cid = ch_id or 0
-            return has_fsub_join_request(cid, user_id)
+        status = member.status
+        logger.debug(f"[fsub] user={user_id} ch={lookup} status={status} jbr={jbr}")
+
+        if status not in ("left", "kicked"):
+            return True  # joined, admin, owner, or restricted-but-still-in
+
+        # User is left/kicked — for JBR channels, check whitelist
+        if jbr and ch_id:
+            in_whitelist = has_fsub_join_request(ch_id, user_id)
+            logger.debug(f"[fsub] JBR whitelist check ch={ch_id} user={user_id} → {in_whitelist}")
+            return in_whitelist
         return False
+
     except Exception as exc:
-        logger.debug(f"[fsub] get_chat_member({lookup}) failed: {exc}")
-        if jbr:
-            cid = ch_id or 0
-            return has_fsub_join_request(cid, user_id)
+        logger.debug(f"[fsub] get_chat_member({lookup}) raised: {exc}")
+        # Bot can't check membership (private channel, not admin, etc.)
+        # For JBR channels: check whitelist instead of blocking
+        if jbr and ch_id:
+            in_whitelist = has_fsub_join_request(ch_id, user_id)
+            logger.debug(f"[fsub] JBR fallback whitelist ch={ch_id} user={user_id} → {in_whitelist}")
+            return in_whitelist
         return False
 
 
@@ -128,7 +138,8 @@ async def get_unsubscribed_channels(
         jbr         = bool(row[2]) if len(row) > 2 else False
         invite_link = row[3] if len(row) > 3 else ""
 
-        # Resolve numeric channel_id (stored in column index 4 from DB)
+        # Resolve numeric channel_id — needed for whitelist lookup
+        # Priority: stored column → parse numeric username → bot.get_chat (JBR only)
         ch_id: Optional[int] = None
         if len(row) > 4 and row[4]:
             try:
@@ -136,10 +147,28 @@ async def get_unsubscribed_channels(
             except (ValueError, TypeError):
                 pass
         if ch_id is None:
+            # Covers channels stored as "-1001234567890" in channel_username
             try:
                 ch_id = int(uname.lstrip("@"))
             except (ValueError, TypeError):
                 pass
+        # For JBR channels where ch_id is still None (public @username channels):
+        # resolve via Bot API once and update DB so future checks are instant.
+        if ch_id is None and jbr:
+            try:
+                chat_obj = await bot.get_chat(uname)
+                ch_id = chat_obj.id
+                # Persist so we don't need to resolve again
+                try:
+                    from database_dual import _pg_run as _pgr
+                    _pgr(
+                        "UPDATE force_sub_channels SET channel_id = %s WHERE channel_username = %s AND channel_id IS NULL",
+                        (ch_id, uname),
+                    )
+                except Exception:
+                    pass
+            except Exception as _ge:
+                logger.debug(f"[fsub] could not resolve ch_id for {uname}: {_ge}")
 
         # Check via main bot first, then clone bot
         subscribed = False
