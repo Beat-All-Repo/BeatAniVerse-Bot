@@ -819,6 +819,33 @@ def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
             pass
 
 
+def get_all_fsub_whitelisted_users(channel_username: str) -> list:
+    """
+    Return list of user_ids that have a pending join-request record for
+    *channel_username* (or matching by stored channel_id).
+    Used by the startup sync to clean up stale entries.
+    """
+    rows = _pg_exec_many("""
+        SELECT DISTINCT r.user_id
+        FROM fsub_join_requests r
+        LEFT JOIN force_sub_channels c ON c.channel_username = r.channel_username
+        WHERE r.channel_username = %s
+           OR (c.channel_id IS NOT NULL AND r.channel_id = c.channel_id)
+    """, (channel_username,))
+    if rows:
+        return [r[0] for r in rows]
+
+    if _MG.db is not None:
+        try:
+            docs = list(_MG.db.fsub_join_requests.find(
+                {"channel_username": channel_username}, {"user_id": 1}
+            ))
+            return [d["user_id"] for d in docs if "user_id" in d]
+        except Exception:
+            pass
+    return []
+
+
 def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
     """
     Return list of force-sub channels.
