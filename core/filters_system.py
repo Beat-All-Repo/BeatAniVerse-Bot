@@ -57,21 +57,49 @@ def passes_filter(update: "Update", command: str = "") -> bool:
 
 # ── Force subscription check ───────────────────────────────────────────────────
 
+async def _is_sub_single(bot: Bot, user_id: int,
+                          uname: str, ch_id: Optional[int],
+                          jbr: bool) -> bool:
+    """
+    Exact port of is_sub() from Advance-File-Share-bot:
+
+    1. Try get_chat_member.
+       - If status is MEMBER / ADMIN / OWNER / RESTRICTED → subscribed ✅
+       - If status is LEFT / KICKED:
+           • If channel is JBR mode → check DB whitelist (has_fsub_join_request)
+           • Otherwise → not subscribed ❌
+    2. If get_chat_member raises any error:
+       - If JBR mode → check DB whitelist (bot might not be admin)
+       - Otherwise → not subscribed (safe default)
+    """
+    from database_dual import has_fsub_join_request
+
+    lookup = ch_id if ch_id else uname
+    try:
+        member = await bot.get_chat_member(chat_id=lookup, user_id=user_id)
+        if member.status not in ("left", "kicked"):
+            return True
+        # status is left/kicked
+        if jbr:
+            cid = ch_id or 0
+            return has_fsub_join_request(cid, user_id)
+        return False
+    except Exception as exc:
+        logger.debug(f"[fsub] get_chat_member({lookup}) failed: {exc}")
+        if jbr:
+            cid = ch_id or 0
+            return has_fsub_join_request(cid, user_id)
+        return False
+
+
 async def get_unsubscribed_channels(
     user_id: int, bot: Bot
 ) -> List[Tuple[str, str, bool, str]]:
     """
-    Return 4-tuples (username, title, jbr, invite_link) for channels the user
-    has NOT yet fully joined.
+    Return 4-tuples (uname, title, jbr, invite_link) for channels the user
+    has NOT yet fully joined/whitelisted.
 
-    JBR (join-by-request) channels are auto-approved by the ChatJoinRequest
-    handler in channels.py the moment the user taps "Send Request".  After
-    approval their status becomes MEMBER, so this check passes naturally on the
-    next "Try Again" click — no special bypass needed.
-
-    Fallback: if get_chat_member raises an exception on a JBR channel (bot is
-    not admin there and cannot read membership), we give the user the benefit
-    of the doubt and treat them as subscribed rather than blocking them forever.
+    Mirrors is_subscribed() + is_sub() from Advance-File-Share-bot exactly.
     """
     try:
         from database_dual import get_all_force_sub_channels, get_main_bot_token
@@ -82,9 +110,7 @@ async def get_unsubscribed_channels(
     if not channels_info:
         return []
 
-    unsubscribed: List[Tuple[str, str, bool, str]] = []
     main_bot: Optional[Bot] = None
-
     from core.config import I_AM_CLONE
     if I_AM_CLONE:
         main_token = get_main_bot_token()
@@ -94,50 +120,33 @@ async def get_unsubscribed_channels(
             except Exception:
                 pass
 
+    unsubscribed: List[Tuple[str, str, bool, str]] = []
+
     for row in channels_info:
-        # Safely unpack 3- or 4-element rows for backwards compat
         uname       = row[0] if len(row) > 0 else ""
         title       = row[1] if len(row) > 1 else uname
         jbr         = bool(row[2]) if len(row) > 2 else False
         invite_link = row[3] if len(row) > 3 else ""
 
+        # Resolve numeric channel_id (stored in column index 4 from DB)
+        ch_id: Optional[int] = None
+        if len(row) > 4 and row[4]:
+            try:
+                ch_id = int(row[4])
+            except (ValueError, TypeError):
+                pass
+        if ch_id is None:
+            try:
+                ch_id = int(uname.lstrip("@"))
+            except (ValueError, TypeError):
+                pass
+
+        # Check via main bot first, then clone bot
         subscribed = False
-        checked    = False
         for check_bot in filter(None, [bot, main_bot]):
-            try:
-                member = await check_bot.get_chat_member(chat_id=uname, user_id=user_id)
-                checked = True
-                # MEMBER, ADMINISTRATOR, OWNER, RESTRICTED (still in channel) all pass
-                if member.status not in ("left", "kicked"):
-                    subscribed = True
+            subscribed = await _is_sub_single(check_bot, user_id, uname, ch_id, jbr)
+            if subscribed:
                 break
-            except Exception as exc:
-                logger.debug(f"Membership check {uname} failed: {exc}")
-                continue
-
-        # ── JBR fallback: check if user already sent a join request ────────────
-        # Even if the membership check failed (bot not admin) or the approval
-        # hasn't happened yet, if we have a stored record that the user sent
-        # a request to this channel, do NOT ask them to do it again.
-        if not subscribed and jbr:
-            try:
-                from database_dual import has_fsub_join_request
-                # Determine numeric channel_id if we have it stored
-                ch_id_int = None
-                try:
-                    ch_id_int = int(uname.lstrip("@"))
-                except (ValueError, TypeError):
-                    pass
-                if has_fsub_join_request(user_id, uname, channel_id=ch_id_int):
-                    logger.debug(f"[fsub] user {user_id} has pending request for {uname} — skipping")
-                    subscribed = True
-            except Exception as _hr_err:
-                logger.debug(f"[fsub] has_fsub_join_request error: {_hr_err}")
-
-        # Last resort: if we couldn't check at all AND it's a JBR channel,
-        # give benefit of the doubt rather than blocking forever.
-        if not checked and not subscribed and jbr:
-            subscribed = True
 
         if not subscribed:
             unsubscribed.append((uname, title, jbr, invite_link))
