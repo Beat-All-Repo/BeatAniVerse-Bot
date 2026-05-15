@@ -339,7 +339,10 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
     except Exception:
         pass
 
+    _sent_chatbot_msg = None
+
     async def _send_reply(reply_text: str):
+        nonlocal _sent_chatbot_msg
         sent = None
         try:
             sent = await update.message.reply_text(reply_text)
@@ -348,6 +351,7 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
                 sent = await context.bot.send_message(chat_id=chat_id, text=reply_text)
             except Exception:
                 pass
+        _sent_chatbot_msg = sent
         return sent
 
     try:
@@ -368,8 +372,8 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
     try:
         from core.auto_delete import auto_delete_middleware
         await auto_delete_middleware(
-            bot          = update.get_bot() if hasattr(update, "get_bot") else update.message.get_bot(),
-            sent_msg     = sent_chatbot,
+            bot          = context.bot,
+            sent_msg     = _sent_chatbot_msg,
             trigger_msg  = update.message,
             is_chatbot   = True,   # ← exempts GC chatbot replies from deletion
         )
@@ -405,14 +409,14 @@ async def send_user_features_panel(
 
     # 8 feature buttons in 4×2 grid — each opens its own help card
     FEATURES = [
-        ("🎌 Anime",       "uf_help:anime",    "uf"),
-        ("📚 Manga",       "uf_help:manga",    "uf"),
-        ("🎬 Movie",       "uf_help:movie",    "uf"),
-        ("👤 Character",   "uf_help:character","uf"),
-        ("🤗 Reactions",   "uf_help:reactions","uf"),
-        ("💬 Chatbot",     "uf_help:chatbot",  "uf"),
-        ("📝 Notes",       "uf_help:notes",    "uf"),
-        ("⚖️ Group Tools", "uf_help:group",    "uf"),
+        (" Anime",       "uf_help:anime",    "uf"),
+        (" Manga",       "uf_help:manga",    "uf"),
+        (" Movie",       "uf_help:movie",    "uf"),
+        (" Character",   "uf_help:character","uf"),
+        (" Reactions",   "uf_help:reactions","uf"),
+        (" Chatbot",     "uf_help:chatbot",  "uf"),
+        (" Notes",       "uf_help:notes",    "uf"),
+        (" Group Tools", "uf_help:group",    "uf"),
     ]
 
     rows = []
@@ -460,7 +464,7 @@ async def send_user_features_panel(
 
     FEATURES_PAGES = [
         {
-            "title": "🎌 ᴀɴɪᴍᴇ & ᴍᴀɴɢᴀ",
+            "title": " ᴀɴɪᴍᴇ & ᴍᴀɴɢᴀ",
             "items": [
                 ("/anime &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴀɴɪᴍᴇ ᴘᴏsᴛᴇʀ + ɪɴꜰᴏ"),
                 ("/manga &lt;name&gt;",     "ɢᴇɴᴇʀᴀᴛᴇ ᴍᴀɴɢᴀ ᴘᴏsᴛᴇʀ"),
@@ -471,7 +475,7 @@ async def send_user_features_panel(
             ],
         },
         {
-            "title": "👥 ꜱᴏᴄɪᴀʟ",
+            "title": " ꜱᴏᴄɪᴀʟ",
             "items": [
                 ("/hug",   "sᴇɴᴅ ᴀ ʜᴜɢ ɢɪꜰ"),
                 ("/slap",  "sʟᴀᴘ sᴏᴍᴇᴏɴᴇ"),
@@ -482,7 +486,7 @@ async def send_user_features_panel(
             ],
         },
         {
-            "title": "📋 ɢʀᴏᴜᴘ ᴛᴏᴏʟs",
+            "title": " ɢʀᴏᴜᴘ ᴛᴏᴏʟs",
             "items": [
                 ("/warn",       "ᴡᴀʀɴ ᴀ ᴜsᴇʀ"),
                 ("/warns",      "ᴄʜᴇᴄᴋ ᴡᴀʀɴs"),
