@@ -282,19 +282,26 @@ async def auto_approve_join_request(
             except Exception:
                 pass
 
+        # ── Record join request in DB IMMEDIATELY for any JBR fsub channel ─────
+        # This fires before the should_approve gate so the whitelist entry is
+        # created even when reqmode is off or auto-approve is disabled.
+        # get_unsubscribed_channels reads this table and skips the channel for
+        # this user — so they never have to send the request again.
+        _is_jbr_fsub = ch_info is not None and bool(ch_info[2]) if ch_info else False
+        if not _is_jbr_fsub and req.chat.username:
+            # Also covers channels found via username fallback scan above
+            _is_jbr_fsub = should_approve  # set True by 3a-fallback
+        if _is_jbr_fsub or should_approve:
+            try:
+                from database_dual import record_fsub_join_request
+                ch_uname = (req.chat.username and f"@{req.chat.username}") or str(req.chat.id)
+                record_fsub_join_request(req.from_user.id, ch_uname, channel_id=req.chat.id)
+                logger.debug(f"[approve] 📝 whitelisted: user={req.from_user.id} ch={ch_uname}")
+            except Exception as _rec_err:
+                logger.debug(f"[approve] record_request failed: {_rec_err}")
+
         if not should_approve:
             return
-
-        # ── Record join request in DB immediately ─────────────────────────────
-        # This lets get_unsubscribed_channels skip this JBR channel for the user
-        # on their next interaction, even before the approval completes.
-        try:
-            from database_dual import record_fsub_join_request
-            ch_uname = (req.chat.username and f"@{req.chat.username}") or str(req.chat.id)
-            record_fsub_join_request(req.from_user.id, ch_uname, channel_id=req.chat.id)
-            logger.debug(f"[approve] 📝 recorded request: user={req.from_user.id} ch={ch_uname}")
-        except Exception as _rec_err:
-            logger.debug(f"[approve] record_request failed: {_rec_err}")
 
         # 4 — Configurable wait before approving (prevents abuse detection)
         wait_secs = _get_approval_wait()
@@ -627,7 +634,7 @@ async def cmd_fsublist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     channels = get_all_force_sub_channels(return_usernames_only=False)
     if not channels:
         await update.message.reply_text(
-            " <b>No force-sub channels configured.</b>\n\n"
+            "📋 <b>No force-sub channels configured.</b>\n\n"
             "Use <code>/addfsub @username</code> to add one.",
             parse_mode=ParseMode.HTML,
         )
@@ -640,7 +647,7 @@ async def cmd_fsublist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         jbr         = bool(row[2]) if len(row) > 2 else False
         invite_link = row[3] if len(row) > 3 else ""
 
-        mode_badge  = "  <i>JBR</i>"  if jbr else " 📢 <i>Direct</i>"
+        mode_badge  = " 🔔 <i>JBR</i>"  if jbr else " 📢 <i>Direct</i>"
         link_badge  = " ✅ link stored"  if invite_link else ""
         # Try to resolve current title from Telegram (best-effort)
         try:
@@ -658,3 +665,71 @@ async def cmd_fsublist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "\n\n<i>Commands: /addfsub  /delfsub  /reqmode  /reqtime  /approvestatus</i>"
     )
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Startup: Scan pending join requests for all JBR fsub channels
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def sync_jbr_whitelist_on_startup(bot) -> None:
+    """
+    Called once at bot startup.
+
+    For every JBR force-sub channel:
+      - Verify bot is still an admin (log warning if not).
+      - For every user in fsub_join_requests table for this channel:
+          • If they are now a MEMBER  → clear the whitelist entry (they joined).
+          • If they are still pending  → keep the entry (they'll be whitelisted
+            and auto-approved when they interact with the bot next).
+
+    We cannot fetch the list of pending requests via Bot API, so we rely on
+    the real-time ChatJoinRequest handler to add new entries.  This function
+    only cleans up stale ones.
+    """
+    try:
+        from database_dual import (
+            get_all_force_sub_channels, get_all_fsub_whitelisted_users,
+            clear_fsub_join_request,
+        )
+    except ImportError as _ie:
+        logger.debug(f"[jbr_startup] import error: {_ie}")
+        return
+
+    channels = get_all_force_sub_channels(return_usernames_only=False)
+    jbr_channels = [row for row in (channels or []) if len(row) > 2 and row[2]]
+
+    if not jbr_channels:
+        return
+
+    logger.info(f"[jbr_startup] Syncing whitelist for {len(jbr_channels)} JBR channel(s)…")
+
+    for row in jbr_channels:
+        uname      = row[0]
+        ch_id_raw  = row[4] if len(row) > 4 else None  # numeric id if stored
+        ch_lookup  = ch_id_raw if ch_id_raw else uname
+
+        # Check bot is admin
+        try:
+            me     = await bot.get_me()
+            bot_mb = await bot.get_chat_member(ch_lookup, me.id)
+            if bot_mb.status not in ("administrator", "creator"):
+                logger.warning(f"[jbr_startup] Bot is NOT admin in {uname} — JBR auto-approve won't work!")
+        except Exception as _ae:
+            logger.debug(f"[jbr_startup] admin check failed for {uname}: {_ae}")
+
+        # Clean up users who are now full members (already approved)
+        whitelisted = get_all_fsub_whitelisted_users(uname)
+        if not whitelisted:
+            continue
+
+        for uid in whitelisted:
+            try:
+                member = await bot.get_chat_member(ch_lookup, uid)
+                if member.status not in ("left", "kicked"):
+                    # Already a member — clear the whitelist entry
+                    clear_fsub_join_request(uid, uname)
+                    logger.debug(f"[jbr_startup] cleared stale whitelist: user={uid} ch={uname}")
+            except Exception:
+                pass  # Can't verify — leave the entry in place
+
+    logger.info("[jbr_startup] JBR whitelist sync complete.")
