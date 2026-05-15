@@ -422,6 +422,26 @@ def force_sub_required(func: Callable) -> Callable:
 
         unsubscribed = await get_unsubscribed_channels(uid, context.bot)
         if unsubscribed:
+            # ── Store pending deep-link so "Try Again" can resume it ──────────
+            pending_link_id = None
+            if context.args:
+                pending_link_id = context.args[0]
+            elif update.callback_query:
+                # Already in callback context — preserve whatever was stored
+                pending_link_id = context.user_data.get("pending_link_id")
+
+            if pending_link_id:
+                context.user_data["pending_link_id"] = pending_link_id
+                # Pre-generate the invite link in background so "Try Again"
+                # delivers it instantly from cache without a new API call.
+                async def _pregenerate(bot=context.bot, lid=pending_link_id):
+                    try:
+                        from handlers.start import _prewarm_link
+                        await _prewarm_link(bot, lid)
+                    except Exception:
+                        pass
+                asyncio.create_task(_pregenerate())
+
             await _send_force_sub_screen(update, context, unsubscribed, uid)
             return
 
