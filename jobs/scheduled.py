@@ -6,6 +6,7 @@ All periodic background jobs:
   - cleanup_expired_links_job: purge expired deep links
   - check_scheduled_broadcasts: fire pending scheduled broadcasts
   - _prewarm_all_caches: keep panel data warm
+  - recover_pending_deletes_job: delete GC filter-poster messages after link expires
 """
 import asyncio
 from datetime import datetime
@@ -87,6 +88,26 @@ async def cleanup_expired_links_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         cleanup_expired_links()
     except Exception as exc:
         logger.debug(f"cleanup_expired_links_job error: {exc}")
+
+
+async def recover_pending_deletes_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Job: delete GC filter-poster messages whose invite link has expired.
+
+    Runs every 60 s.  Reads from the persistent pending_message_deletes table
+    so deletions are not lost across bot restarts — the asyncio task in
+    _auto_delete covers the normal case; this job covers the restart case.
+    """
+    try:
+        from database_dual import pop_due_pending_deletes
+        rows = pop_due_pending_deletes()
+        for chat_id, message_id in rows:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass  # Already deleted or bot has no permission — silent
+    except Exception as exc:
+        logger.debug(f"recover_pending_deletes_job error: {exc}")
 
 
 # ── Scheduled broadcasts job ──────────────────────────────────────────────────
