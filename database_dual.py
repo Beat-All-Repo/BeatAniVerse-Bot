@@ -735,14 +735,17 @@ def update_force_sub_invite_link(channel_username: str, invite_link: str) -> boo
             pass
     return ok
 
-# ── FSub join-request tracking ────────────────────────────────────────────────
+# ── FSub join-request tracking (mirrors Advance-File-Share-bot logic) ─────────
+# Reference: request_forcesub_channel collection keyed by numeric channel_id
+# Stores set of user_ids who have sent a join request to each JBR channel.
+# On chat_join_request  → add user_id to channel's set
+# On chat_member_updated (user leaves) → remove user_id from channel's set
+# On is_sub check        → if status=="left" and mode=="jbr" → check this table
 
-def record_fsub_join_request(user_id: int, channel_username: str,
-                              channel_id: int = None) -> bool:
+def record_fsub_join_request(channel_id: int, user_id: int) -> bool:
     """
-    Store the fact that *user_id* sent a join request to *channel_username*.
-    Called by the ChatJoinRequest handler so the user is not shown that JBR
-    channel again on their next interaction.
+    Add *user_id* to the join-request whitelist for *channel_id*.
+    Idempotent — safe to call multiple times.
     """
     ok = _pg_run("""
         INSERT INTO fsub_join_requests (user_id, channel_username, channel_id)
@@ -751,13 +754,12 @@ def record_fsub_join_request(user_id: int, channel_username: str,
             SET requested_at = NOW(),
                 channel_id   = COALESCE(EXCLUDED.channel_id,
                                         fsub_join_requests.channel_id)
-    """, (user_id, channel_username, channel_id))
+    """, (user_id, str(channel_id), channel_id))
     if _MG.db is not None:
         try:
-            _MG.db.fsub_join_requests.update_one(
-                {"user_id": user_id, "channel_username": channel_username},
-                {"$set": {"user_id": user_id, "channel_username": channel_username,
-                           "channel_id": channel_id}},
+            _MG.db.rqst_fsub_Channel_data.update_one(
+                {"_id": int(channel_id)},
+                {"$addToSet": {"user_ids": int(user_id)}},
                 upsert=True,
             )
         except Exception:
@@ -765,82 +767,95 @@ def record_fsub_join_request(user_id: int, channel_username: str,
     return ok
 
 
-def has_fsub_join_request(user_id: int, channel_username: str,
-                           channel_id: int = None) -> bool:
+def has_fsub_join_request(channel_id: int, user_id: int) -> bool:
     """
-    Return True if *user_id* has previously sent a join request to this channel.
-    Looks up by channel_username first, then by numeric channel_id (fallback).
+    Return True if *user_id* is in the whitelist for *channel_id*.
+    Primary lookup is by numeric channel_id — fast and unambiguous.
     """
-    row = _pg_exec("""
-        SELECT 1 FROM fsub_join_requests
-        WHERE user_id = %s AND channel_username = %s
-        LIMIT 1
-    """, (user_id, channel_username))
+    row = _pg_exec(
+        "SELECT 1 FROM fsub_join_requests WHERE channel_id = %s AND user_id = %s LIMIT 1",
+        (channel_id, user_id),
+    )
     if row:
         return True
 
-    # Fallback: match by numeric channel_id stored in the requests table
-    if channel_id:
-        row = _pg_exec("""
-            SELECT 1 FROM fsub_join_requests
-            WHERE user_id = %s AND channel_id = %s
-            LIMIT 1
-        """, (user_id, channel_id))
-        if row:
-            return True
-
     if _MG.db is not None:
         try:
-            q = {"user_id": user_id}
-            if channel_id:
-                q = {"user_id": user_id,
-                     "$or": [{"channel_username": channel_username},
-                              {"channel_id": channel_id}]}
-            else:
-                q["channel_username"] = channel_username
-            return _MG.db.fsub_join_requests.find_one(q) is not None
+            found = _MG.db.rqst_fsub_Channel_data.find_one(
+                {"_id": int(channel_id), "user_ids": int(user_id)}
+            )
+            return bool(found)
         except Exception:
             pass
     return False
 
 
-def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
-    """Remove the stored request (called after user is fully approved/joined)."""
+def remove_fsub_join_request(channel_id: int, user_id: int) -> None:
+    """
+    Remove *user_id* from the whitelist for *channel_id*.
+    Called when user leaves the channel (chat_member_updated).
+    """
     _pg_run(
-        "DELETE FROM fsub_join_requests WHERE user_id = %s AND channel_username = %s",
-        (user_id, channel_username),
+        "DELETE FROM fsub_join_requests WHERE channel_id = %s AND user_id = %s",
+        (channel_id, user_id),
     )
     if _MG.db is not None:
         try:
-            _MG.db.fsub_join_requests.delete_one(
-                {"user_id": user_id, "channel_username": channel_username}
+            _MG.db.rqst_fsub_Channel_data.update_one(
+                {"_id": int(channel_id)},
+                {"$pull": {"user_ids": int(user_id)}},
             )
         except Exception:
             pass
 
 
-def get_all_fsub_whitelisted_users(channel_username: str) -> list:
-    """
-    Return list of user_ids that have a pending join-request record for
-    *channel_username* (or matching by stored channel_id).
-    Used by the startup sync to clean up stale entries.
-    """
-    rows = _pg_exec_many("""
-        SELECT DISTINCT r.user_id
-        FROM fsub_join_requests r
-        LEFT JOIN force_sub_channels c ON c.channel_username = r.channel_username
-        WHERE r.channel_username = %s
-           OR (c.channel_id IS NOT NULL AND r.channel_id = c.channel_id)
-    """, (channel_username,))
-    if rows:
-        return [r[0] for r in rows]
+# keep old name as alias so existing callers don't break
+def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
+    """Alias kept for backwards compatibility."""
+    try:
+        cid = int(channel_username.lstrip("@"))
+    except (ValueError, AttributeError):
+        return
+    remove_fsub_join_request(cid, user_id)
 
+
+def is_jbr_fsub_channel(channel_id: int) -> bool:
+    """
+    Return True if *channel_id* is in the force-sub list with join_by_request=TRUE.
+    """
+    row = _pg_exec("""
+        SELECT 1 FROM force_sub_channels
+        WHERE is_active = TRUE AND join_by_request = TRUE
+          AND (channel_id = %s OR channel_username = %s)
+        LIMIT 1
+    """, (channel_id, str(channel_id)))
+    if row:
+        return True
     if _MG.db is not None:
         try:
-            docs = list(_MG.db.fsub_join_requests.find(
-                {"channel_username": channel_username}, {"user_id": 1}
-            ))
-            return [d["user_id"] for d in docs if "user_id" in d]
+            doc = _MG.db.force_sub_channels.find_one(
+                {"is_active": True, "join_by_request": True,
+                 "$or": [{"channel_id": int(channel_id)},
+                         {"channel_username": str(channel_id)}]}
+            )
+            return bool(doc)
+        except Exception:
+            pass
+    return False
+
+
+def get_all_fsub_whitelisted_users(channel_id: int) -> list:
+    """Return all user_ids whitelisted for *channel_id* (used by startup cleanup)."""
+    rows = _pg_exec_many(
+        "SELECT user_id FROM fsub_join_requests WHERE channel_id = %s",
+        (channel_id,),
+    )
+    if rows:
+        return [r[0] for r in rows]
+    if _MG.db is not None:
+        try:
+            doc = _MG.db.rqst_fsub_Channel_data.find_one({"_id": int(channel_id)})
+            return list(doc.get("user_ids", [])) if doc else []
         except Exception:
             pass
     return []
@@ -862,11 +877,12 @@ def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
         rows = _pg_exec_many("""
             SELECT channel_username, channel_title,
                    COALESCE(join_by_request, FALSE),
-                   COALESCE(invite_link, '')
+                   COALESCE(invite_link, ''),
+                   channel_id
             FROM force_sub_channels WHERE is_active = TRUE ORDER BY channel_title
         """)
         if rows is not None:
-            # Normalise: each row is a 4-tuple (uname, title, jbr, invite_link)
+            # 5-tuple: (uname, title, jbr, invite_link, channel_id)
             return [tuple(r) for r in rows]
 
     # Mongo fallback
@@ -881,6 +897,7 @@ def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
                     d.get("channel_title", ""),
                     bool(d.get("join_by_request", False)),
                     d.get("invite_link", "") or "",
+                    d.get("channel_id"),
                 )
                 for d in docs
             ]
