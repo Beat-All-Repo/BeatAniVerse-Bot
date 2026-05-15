@@ -282,42 +282,38 @@ async def auto_approve_join_request(
             except Exception:
                 pass
 
-        # ── Record join request in DB IMMEDIATELY for any JBR fsub channel ─────
-        # This fires before the should_approve gate so the whitelist entry is
-        # created even when reqmode is off or auto-approve is disabled.
-        # get_unsubscribed_channels reads this table and skips the channel for
-        # this user — so they never have to send the request again.
-        _is_jbr_fsub = ch_info is not None and bool(ch_info[2]) if ch_info else False
-        if not _is_jbr_fsub and req.chat.username:
-            # Also covers channels found via username fallback scan above
-            _is_jbr_fsub = should_approve  # set True by 3a-fallback
-        if _is_jbr_fsub or should_approve:
+        # ── Step A: Whitelist immediately (reference-bot pattern) ───────────────
+        # Record join request as soon as it arrives — BEFORE any gate.
+        # is_sub() will see this record and let the user through on next check.
+        # This is the core of the reference bot's JBR logic.
+        _ch_is_jbr = (
+            (ch_info is not None and bool(ch_info[2]))  # from DB lookup by id
+            or should_approve                            # found via username fallback
+        )
+        if _ch_is_jbr:
             try:
                 from database_dual import record_fsub_join_request
-                ch_uname = (req.chat.username and f"@{req.chat.username}") or str(req.chat.id)
-                record_fsub_join_request(req.from_user.id, ch_uname, channel_id=req.chat.id)
-                logger.debug(f"[approve] 📝 whitelisted: user={req.from_user.id} ch={ch_uname}")
-            except Exception as _rec_err:
-                logger.debug(f"[approve] record_request failed: {_rec_err}")
+                record_fsub_join_request(req.chat.id, req.from_user.id)
+                logger.debug(f"[jbr] ✅ whitelisted user={req.from_user.id} ch={req.chat.id}")
+            except Exception as _re:
+                logger.debug(f"[jbr] whitelist failed: {_re}")
 
         if not should_approve:
             return
 
+        # ── Step B: Auto-approve (optional, controlled by reqmode) ────────────
         # 4 — Configurable wait before approving (prevents abuse detection)
         wait_secs = _get_approval_wait()
         if wait_secs > 0:
             await asyncio.sleep(wait_secs)
 
-        # Approve
-        await context.bot.approve_chat_join_request(req.chat.id, req.from_user.id)
-        logger.debug(f"[approve] ✅ approved {req.from_user.id} in {req.chat.id}")
-
-        # ── Clean up stored request — user is now a full member ───────────────
         try:
-            from database_dual import clear_fsub_join_request
-            clear_fsub_join_request(req.from_user.id, ch_uname)
-        except Exception:
-            pass
+            await context.bot.approve_chat_join_request(req.chat.id, req.from_user.id)
+            logger.debug(f"[approve] ✅ approved {req.from_user.id} in {req.chat.id}")
+            # After approval user is a full MEMBER — whitelist entry no longer needed
+            # but we leave it; it does no harm and avoids a DB write on every approval.
+        except Exception as _ae:
+            logger.debug(f"[approve] approve failed (already approved?): {_ae}")
 
         # 5 — Send welcome photo DM
         try:
@@ -382,6 +378,40 @@ async def auto_approve_join_request(
 
 
 # ── Admin commands (ported from BCJ bot) ──────────────────────────────────────
+
+
+async def handle_chat_member_left(update, context) -> None:
+    """
+    Mirrors handle_Chatmembers() from Advance-File-Share-bot.
+    When a user leaves/is kicked from a JBR fsub channel,
+    remove them from the whitelist so they must request again.
+    """
+    cmu = update.chat_member
+    if not cmu:
+        return
+
+    chat_id  = cmu.chat.id
+    old_mem  = cmu.old_chat_member
+    new_mem  = cmu.new_chat_member
+
+    if not old_mem or not new_mem:
+        return
+
+    # Only care when transitioning FROM member TO left/kicked
+    was_member = old_mem.status in ("member", "administrator", "creator", "restricted")
+    now_left   = new_mem.status in ("left", "kicked")
+    if not (was_member and now_left):
+        return
+
+    user_id = new_mem.user.id
+
+    try:
+        from database_dual import is_jbr_fsub_channel, remove_fsub_join_request
+        if is_jbr_fsub_channel(chat_id):
+            remove_fsub_join_request(chat_id, user_id)
+            logger.debug(f"[jbr] removed whitelist: user={user_id} ch={chat_id}")
+    except Exception as exc:
+        logger.debug(f"[jbr] handle_chat_member_left error: {exc}")
 
 async def cmd_reqtime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
