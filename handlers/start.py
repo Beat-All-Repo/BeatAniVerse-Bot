@@ -425,6 +425,97 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ── Deep link handler ─────────────────────────────────────────────────────────
 
+async def _prewarm_link(bot, link_id: str) -> None:
+    """
+    Pre-generate and cache the invite link for a given link_id without sending
+    anything to the user.  Called as a background task when the fsub screen is
+    shown so that "Try Again" delivers the link instantly from cache.
+    """
+    try:
+        from database_dual import get_link_info, get_force_sub_channel_info, get_main_bot_token
+        from core.text_utils import now_utc
+        from core.config import I_AM_CLONE
+        from datetime import datetime, timedelta
+
+        link_info = get_link_info(link_id)
+        if not link_info:
+            return
+
+        channel_identifier, creator_id, created_time, never_expires = link_info
+
+        if not never_expires:
+            try:
+                created_dt = datetime.fromisoformat(str(created_time))
+                if now_utc() > created_dt + timedelta(minutes=LINK_EXPIRY_MINUTES):
+                    return
+            except Exception:
+                pass
+
+        if isinstance(channel_identifier, str) and channel_identifier.lstrip("-").isdigit():
+            channel_id = int(channel_identifier)
+        else:
+            channel_id = channel_identifier
+
+        invite_bot = bot
+        if I_AM_CLONE:
+            main_token = get_main_bot_token()
+            if main_token:
+                try:
+                    from telegram import Bot as _Bot
+                    invite_bot = _Bot(token=main_token)
+                except Exception:
+                    pass
+
+        _ch_info = get_force_sub_channel_info(str(channel_id))
+        _jbr_mode = bool(_ch_info and _ch_info[2]) if _ch_info else False
+
+        # Skip if already cached and fresh
+        _cached = _invite_cache.get(channel_id)
+        if _cached and _cached.get("jbr") == _jbr_mode:
+            age = (datetime.utcnow() - _cached["ts"]).total_seconds()
+            if age < 300:
+                return  # Already warm
+
+        async with _channel_locks[channel_id]:
+            # Re-check inside lock
+            _cached = _invite_cache.get(channel_id)
+            if _cached and _cached.get("jbr") == _jbr_mode:
+                age = (datetime.utcnow() - _cached["ts"]).total_seconds()
+                if age < 300:
+                    return
+
+            if _cached:
+                try:
+                    await invite_bot.revoke_chat_invite_link(channel_id, _cached["link"])
+                except Exception:
+                    pass
+                _invite_cache.pop(channel_id, None)
+
+            invite = await invite_bot.create_chat_invite_link(
+                channel_id,
+                expire_date=int((datetime.utcnow() + timedelta(minutes=10)).timestamp()),
+                name=f"DeepLink {link_id[:8]}",
+                creates_join_request=_jbr_mode,
+            )
+            _invite_cache[channel_id] = {
+                "link": invite.invite_link,
+                "ts":   datetime.utcnow(),
+                "jbr":  _jbr_mode,
+            }
+
+            async def _revoke_later(_b=invite_bot, _c=channel_id, _l=invite.invite_link):
+                await asyncio.sleep(300)
+                try:
+                    await _b.revoke_chat_invite_link(_c, _l)
+                except Exception:
+                    pass
+                _invite_cache.pop(_c, None)
+            asyncio.create_task(_revoke_later())
+
+    except Exception as _pe:
+        logger.debug(f"[prewarm] link pregeneration failed for {link_id}: {_pe}")
+
+
 async def _loading_dots(bot, chat_id: int, msg_id: int) -> None:
     """
     Parallel dot animation — runs DURING link generation, not before it.
