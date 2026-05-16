@@ -22,8 +22,6 @@ async def anime_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @force_sub_required
 async def manga_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    uid = update.effective_user.id if update.effective_user else 0
-    if uid not in (ADMIN_ID, OWNER_ID): return
     if not passes_filter(update, "manga"): return
     await delete_update_message(update, context)
     if not context.args:
