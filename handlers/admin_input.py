@@ -320,11 +320,21 @@ async def handle_admin_message(
         return
 
 
-    if isinstance(state, str) and (state.startswith("chatbot_key:") or state.startswith("chatbot_new_set:")):
+    if isinstance(state, str) and state.startswith("chatbot_key:"):
         from handlers.chatbot_panel import handle_chatbot_key_input
         handled = await handle_chatbot_key_input(update, context, state)
         if handled:
             user_states.pop(uid, None)
+        return
+
+    if isinstance(state, str) and state == "chatbot_gc_id_input":
+        from handlers.chatbot_panel import handle_chatbot_gc_id_input
+        await handle_chatbot_gc_id_input(update, context)
+        return
+
+    if isinstance(state, str) and state == "chatbot_new_set_name":
+        from handlers.chatbot_panel import handle_chatbot_new_set_name_input
+        await handle_chatbot_new_set_name_input(update, context)
         return
 
     # ── Backup channel ─────────────────────────────────────────────────────────
