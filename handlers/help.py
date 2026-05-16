@@ -297,7 +297,9 @@ async def cmd_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     def sec(title, cmds):
         lines = f"<b>{small_caps(title)}</b>\n"
         for cmd, desc in cmds:
-            lines += f"  /{cmd} — {small_caps(desc)}\n"
+            # html.escape() converts <n> → &lt;n&gt; so Telegram's parser
+            # doesn't reject the whole message as an unsupported HTML tag
+            lines += f"  /{html.escape(cmd)} — {small_caps(html.escape(desc))}\n"
         return lines + "\n"
 
     public = sec("🌐 General — Everyone", [
