@@ -320,21 +320,11 @@ async def handle_admin_message(
         return
 
 
-    if isinstance(state, str) and state.startswith("chatbot_key:"):
+    if isinstance(state, str) and (state.startswith("chatbot_key:") or state.startswith("chatbot_new_set:")):
         from handlers.chatbot_panel import handle_chatbot_key_input
         handled = await handle_chatbot_key_input(update, context, state)
         if handled:
             user_states.pop(uid, None)
-        return
-
-    if isinstance(state, str) and state == "chatbot_gc_id_input":
-        from handlers.chatbot_panel import handle_chatbot_gc_id_input
-        await handle_chatbot_gc_id_input(update, context)
-        return
-
-    if isinstance(state, str) and state == "chatbot_new_set_name":
-        from handlers.chatbot_panel import handle_chatbot_new_set_name_input
-        await handle_chatbot_new_set_name_input(update, context)
         return
 
     # ── Backup channel ─────────────────────────────────────────────────────────
@@ -1126,5 +1116,533 @@ async def handle_admin_message(
         except ValueError:
             await safe_send_message(context.bot, chat_id, b(small_caps("❌ invalid — send a number like 60")))
         return
+
+
+    # ── Filter poster auto-delete (AWAITING_FILTER_AUTODEL) ───────────────────
+    if isinstance(state, str) and state == "AWAITING_FILTER_AUTODEL":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 0:
+                raise ValueError
+            from filter_poster import set_auto_delete_seconds, build_filter_poster_settings_keyboard, get_filter_poster_settings_text
+            set_auto_delete_seconds(chat_id, secs)
+            label = f"{secs}s ({secs // 60} min)" if secs else "disabled (never)"
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ filter auto-delete set: {label}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (e.g. 300 = 5 min, 0 = never)")))
+        return
+
+    # ── Filter poster link expiry (AWAITING_LINK_EXPIRY_FP) ──────────────────
+    if isinstance(state, str) and state == "AWAITING_LINK_EXPIRY_FP":
+        user_states.pop(uid, None)
+        try:
+            mins = int(text.strip())
+            if mins < 0:
+                raise ValueError
+            from filter_poster import set_link_expiry_minutes
+            set_link_expiry_minutes(chat_id, mins)
+            label = f"{mins} min" if mins else "permanent (no expiry)"
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ link expiry set: {label}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_filter_poster"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send minutes (e.g. 5, 60, or 0 for permanent)")))
+        return
+
+    # ── Auto-forward destination (AWAITING_FWD_DEST) ─────────────────────────
+    if isinstance(state, str) and state == "AWAITING_FWD_DEST":
+        user_states.pop(uid, None)
+        dest = text.strip()
+        if dest:
+            from database_dual import set_setting
+            set_setting("autoforward_dest_chat", dest)
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ auto-forward destination set: {e(dest)}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("fsub_fwd_source"), _close_btn()]]),
+            )
+        else:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty — send @username or chat ID")))
+        return
+
+    # ── Clone move links target (AWAITING_MOVE_LINKS) ────────────────────────
+    if isinstance(state, str) and state == "AWAITING_MOVE_LINKS":
+        user_states.pop(uid, None)
+        target = text.strip()
+        if not target:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty — send bot @username")))
+            return
+        try:
+            from database_dual import get_all_links, update_link_bot
+            links = get_all_links() or []
+            moved = 0
+            for link in links:
+                try:
+                    update_link_bot(link.get("link_id") or link.get("id"), target)
+                    moved += 1
+                except Exception:
+                    pass
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ moved {moved} links to {e(target)}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("manage_clones"), _close_btn()]]),
+            )
+        except Exception as exc_ml:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"❌ error moving links: {e(str(exc_ml)[:80])}")))
+        return
+
+    # ── Import users file (AWAITING_IMPORT_USERS_FILE) ───────────────────────
+    if isinstance(state, str) and state == "AWAITING_IMPORT_USERS_FILE":
+        user_states.pop(uid, None)
+        doc = message.document if message else None
+        if not doc:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ please send a .csv or .xlsx file")))
+            return
+        try:
+            file_obj = await context.bot.get_file(doc.file_id)
+            import io, os
+            buf = io.BytesIO()
+            await file_obj.download_to_memory(buf)
+            buf.seek(0)
+            fname = doc.file_name or "import.csv"
+            from database_dual import add_user
+            imported = 0
+            if fname.endswith(".csv"):
+                import csv
+                reader = csv.DictReader(io.StringIO(buf.read().decode("utf-8", errors="replace")))
+                for row in reader:
+                    uid_val = row.get("user_id") or row.get("id") or row.get("uid")
+                    if uid_val:
+                        try:
+                            add_user(int(uid_val))
+                            imported += 1
+                        except Exception:
+                            pass
+            elif fname.endswith((".xlsx", ".xls")):
+                import openpyxl
+                wb = openpyxl.load_workbook(buf)
+                ws = wb.active
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    uid_val = row[0]
+                    if uid_val:
+                        try:
+                            add_user(int(uid_val))
+                            imported += 1
+                        except Exception:
+                            pass
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ imported {imported} users successfully")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("user_management"), _close_btn()]]),
+            )
+        except Exception as exc_iuf:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"❌ import failed: {e(str(exc_iuf)[:80])}")))
+        return
+
+    # ── Import links file (AWAITING_IMPORT_LINKS_FILE) ───────────────────────
+    if isinstance(state, str) and state == "AWAITING_IMPORT_LINKS_FILE":
+        user_states.pop(uid, None)
+        doc = message.document if message else None
+        if not doc:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ please send a .csv or .xlsx file")))
+            return
+        try:
+            file_obj = await context.bot.get_file(doc.file_id)
+            import io
+            buf = io.BytesIO()
+            await file_obj.download_to_memory(buf)
+            buf.seek(0)
+            fname = doc.file_name or "import.csv"
+            from database_dual import save_link
+            imported = 0
+            rows = []
+            if fname.endswith(".csv"):
+                import csv
+                reader = csv.DictReader(io.StringIO(buf.read().decode("utf-8", errors="replace")))
+                rows = list(reader)
+            elif fname.endswith((".xlsx", ".xls")):
+                import openpyxl
+                wb = openpyxl.load_workbook(buf)
+                ws = wb.active
+                headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    rows.append(dict(zip(headers, row)))
+            for row in rows:
+                try:
+                    link_id   = str(row.get("link_id") or row.get("id") or "")
+                    user_id   = int(row.get("user_id") or row.get("uid") or 0)
+                    channel   = str(row.get("channel_id") or row.get("channel") or "")
+                    link_url  = str(row.get("link") or row.get("url") or "")
+                    if link_id and user_id:
+                        save_link(link_id=link_id, user_id=user_id,
+                                  channel_id=channel, link=link_url)
+                        imported += 1
+                except Exception:
+                    pass
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ imported {imported} links successfully")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_back"), _close_btn()]]),
+            )
+        except Exception as exc_ilf:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"❌ import failed: {e(str(exc_ilf)[:80])}")))
+        return
+
+    # ── Auto-forward delay (AWAITING_AF_DELAY) ────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_AF_DELAY":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 0: raise ValueError
+            from database_dual import set_setting
+            conn_id = context.user_data.get("af_editing_conn_id", "global")
+            set_setting(f"af_delay_{conn_id}", str(secs))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ auto-forward delay set: {secs}s")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (e.g. 5, 30, 60)")))
+        return
+
+    # ── Auto-forward caption override (AWAITING_AF_CAPTION) ──────────────────
+    if isinstance(state, str) and state == "AWAITING_AF_CAPTION":
+        user_states.pop(uid, None)
+        cap = text.strip()
+        from database_dual import set_setting
+        conn_id = context.user_data.get("af_editing_conn_id", "global")
+        set_setting(f"af_caption_{conn_id}", cap)
+        label = e(cap[:60]) if cap else small_caps("cleared (using original)")
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("✅ auto-forward caption set:")) + "\n" + bq(label),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward"), _close_btn()]]),
+        )
+        return
+
+    # ── Auto-forward bulk message count (AWAITING_AF_BULK_COUNT) ─────────────
+    if isinstance(state, str) and state == "AWAITING_AF_BULK_COUNT":
+        user_states.pop(uid, None)
+        try:
+            count = int(text.strip())
+            if count < 1: raise ValueError
+            from database_dual import set_setting
+            conn_id = context.user_data.get("af_editing_conn_id", "global")
+            set_setting(f"af_bulk_count_{conn_id}", str(count))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ bulk forward count set: {count} messages")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_autoforward"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send a positive number")))
+        return
+
+    # ── Flood limit input (AWAITING_FLOOD_LIMIT) ──────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_FLOOD_LIMIT":
+        user_states.pop(uid, None)
+        try:
+            limit = int(text.strip())
+            if limit < 1: raise ValueError
+            from database_dual import set_setting
+            set_setting("flood_limit", str(limit))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ flood limit set: {limit} messages")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_spam_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send a positive number (e.g. 5)")))
+        return
+
+    # ── Flood window input (AWAITING_FLOOD_WINDOW) ────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_FLOOD_WINDOW":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 1: raise ValueError
+            from database_dual import set_setting
+            set_setting("flood_window_sec", str(secs))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ flood detection window set: {secs}s")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_spam_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (e.g. 10)")))
+        return
+
+    # ── Flood ban duration (AWAITING_FLOOD_BAN_DUR) ───────────────────────────
+    if isinstance(state, str) and state == "AWAITING_FLOOD_BAN_DUR":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 0: raise ValueError
+            from database_dual import set_setting
+            set_setting("flood_ban_duration_sec", str(secs))
+            label = f"{secs}s" if secs else "permanent"
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ flood ban duration: {label}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_rate_limit_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (0 = permanent)")))
+        return
+
+    # ── Rate limit cooldown (AWAITING_RL_COOLDOWN) ────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_RL_COOLDOWN":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 0: raise ValueError
+            from database_dual import set_setting
+            set_setting("rate_limit_cooldown_sec", str(secs))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ rate limit cooldown set: {secs}s")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_rate_limit_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (e.g. 3)")))
+        return
+
+    # ── Search cache TTL (AWAITING_SEARCH_CACHE_TTL) ─────────────────────────
+    if isinstance(state, str) and state == "AWAITING_SEARCH_CACHE_TTL":
+        user_states.pop(uid, None)
+        try:
+            secs = int(text.strip())
+            if secs < 0: raise ValueError
+            from database_dual import set_setting
+            set_setting("search_cache_ttl_sec", str(secs))
+            label = f"{secs}s" if secs else "disabled"
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ search cache TTL: {label}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_search_settings"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send seconds (0 = no cache)")))
+        return
+
+    # ── Content blocklist words (AWAITING_BLOCKLIST_WORDS) ───────────────────
+    if isinstance(state, str) and state == "AWAITING_BLOCKLIST_WORDS":
+        user_states.pop(uid, None)
+        val = text.strip()
+        from database_dual import set_setting
+        if val == "/clear":
+            set_setting("content_blocklist_words", "")
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("✅ blocklist cleared")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_blocklist_settings"), _close_btn()]]))
+        else:
+            set_setting("content_blocklist_words", val)
+            count = len([w.strip() for w in val.split(",") if w.strip()])
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ {count} word(s) added to blocklist")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_blocklist_settings"), _close_btn()]]),
+            )
+        return
+
+    # ── Default caption template (AWAITING_DEFAULT_CAPTION) ──────────────────
+    if isinstance(state, str) and state == "AWAITING_DEFAULT_CAPTION":
+        user_states.pop(uid, None)
+        cap = text.strip()
+        from database_dual import set_setting
+        set_setting("default_caption_template", cap)
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("✅ default caption template saved")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_default_caption"), _close_btn()]]),
+        )
+        return
+
+    # ── Welcome text (AWAITING_WELCOME_TEXT) ─────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_WELCOME_TEXT":
+        user_states.pop(uid, None)
+        val = text.strip()
+        if val:
+            from database_dual import set_setting
+            set_setting("welcome_text", val)
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps("✅ welcome text saved")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]),
+            )
+        else:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty text not saved")))
+        return
+
+    # ── Welcome buttons (AWAITING_WELCOME_BUTTONS) ───────────────────────────
+    if isinstance(state, str) and state == "AWAITING_WELCOME_BUTTONS":
+        user_states.pop(uid, None)
+        import json as _json_wb
+        lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+        btns = []
+        errors = []
+        for ln in lines:
+            if " - " in ln:
+                parts = ln.split(" - ", 1)
+                btns.append({"text": parts[0].strip(), "url": parts[1].strip()})
+            else:
+                errors.append(ln)
+        from database_dual import set_setting
+        set_setting("welcome_buttons", _json_wb.dumps(btns))
+        msg = b(small_caps(f"✅ {len(btns)} button(s) saved"))
+        if errors:
+            msg += "\n" + bq(small_caps(f"skipped {len(errors)} invalid line(s)"))
+        await safe_send_message(context.bot, chat_id, msg,
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]))
+        return
+
+    # ── Welcome media (AWAITING_WELCOME_MEDIA) ────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_WELCOME_MEDIA":
+        user_states.pop(uid, None)
+        from database_dual import set_setting
+        if message and message.photo:
+            fid = message.photo[-1].file_id
+            set_setting("welcome_media_url", fid)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("✅ welcome photo saved")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]))
+        elif message and message.animation:
+            fid = message.animation.file_id
+            set_setting("welcome_media_url", fid)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("✅ welcome gif/animation saved")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]))
+        elif message and message.video:
+            fid = message.video.file_id
+            set_setting("welcome_media_url", fid)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("✅ welcome video saved")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]))
+        elif text and text.strip() == "/clear":
+            set_setting("welcome_media_url", "")
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("✅ welcome media cleared")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_welcome_settings"), _close_btn()]]))
+        else:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ send a photo, gif, video, or /clear to remove")))
+        return
+
+    # ── Goodbye text (AWAITING_GOODBYE_TEXT) ─────────────────────────────────
+    if isinstance(state, str) and state == "AWAITING_GOODBYE_TEXT":
+        user_states.pop(uid, None)
+        val = text.strip()
+        if val:
+            from database_dual import set_setting
+            set_setting("goodbye_text", val)
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps("✅ goodbye text saved")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_goodbye_settings"), _close_btn()]]),
+            )
+        else:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty text not saved")))
+        return
+
+    # ── Maintenance broadcast message (AWAITING_MAINTENANCE_MESSAGE) ─────────
+    if isinstance(state, str) and state == "AWAITING_MAINTENANCE_MESSAGE":
+        user_states.pop(uid, None)
+        msg_text = text.strip()
+        if not msg_text:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty message not sent")))
+            return
+        from database_dual import set_setting
+        set_setting("maintenance_message", msg_text)
+        await safe_send_message(
+            context.bot, chat_id,
+            b(small_caps("✅ maintenance message saved and will show to users during maintenance")),
+            reply_markup=InlineKeyboardMarkup([[_back_btn("admin_settings"), _close_btn()]]),
+        )
+        return
+
+    # ── Poster font primary (AWAITING_POSTER_FONT_PRIMARY) ───────────────────
+    if isinstance(state, str) and state == "AWAITING_POSTER_FONT_PRIMARY":
+        user_states.pop(uid, None)
+        val = text.strip()
+        if val:
+            from database_dual import set_setting
+            set_setting("poster_font_primary", val)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"✅ title font set: {e(val)}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_poster_text_settings"), _close_btn()]]))
+        else:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty — not saved")))
+        return
+
+    # ── Poster font secondary (AWAITING_POSTER_FONT_SECONDARY) ───────────────
+    if isinstance(state, str) and state == "AWAITING_POSTER_FONT_SECONDARY":
+        user_states.pop(uid, None)
+        val = text.strip()
+        if val:
+            from database_dual import set_setting
+            set_setting("poster_font_secondary", val)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"✅ info font set: {e(val)}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_poster_text_settings"), _close_btn()]]))
+        else:
+            await safe_send_message(context.bot, chat_id, b(small_caps("❌ empty — not saved")))
+        return
+
+    # ── Poster title color (AWAITING_POSTER_TITLE_COLOR) ─────────────────────
+    if isinstance(state, str) and state == "AWAITING_POSTER_TITLE_COLOR":
+        user_states.pop(uid, None)
+        import re as _re_color
+        val = text.strip()
+        if _re_color.match(r"^#[0-9A-Fa-f]{6}$", val):
+            from database_dual import set_setting
+            set_setting("poster_color_title", val)
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps(f"✅ title color set: {e(val)}")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_poster_text_settings"), _close_btn()]]))
+        else:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid hex color — send like #FFFFFF or #FFD700")))
+        return
+
+    # ── Prune threshold days (AWAITING_PRUNE_THRESHOLD) ──────────────────────
+    if isinstance(state, str) and state == "AWAITING_PRUNE_THRESHOLD":
+        user_states.pop(uid, None)
+        try:
+            days = int(text.strip())
+            if days < 1: raise ValueError
+            from database_dual import set_setting
+            set_setting("prune_inactive_days", str(days))
+            await safe_send_message(
+                context.bot, chat_id,
+                b(small_caps(f"✅ prune threshold: {days} days")),
+                reply_markup=InlineKeyboardMarkup([[_back_btn("admin_prune_users"), _close_btn()]]),
+            )
+        except ValueError:
+            await safe_send_message(context.bot, chat_id,
+                b(small_caps("❌ invalid — send a positive number of days")))
+        return
+
 
     logger.debug(f"Admin message in unknown state {state} from {uid}: {text[:50]}")
