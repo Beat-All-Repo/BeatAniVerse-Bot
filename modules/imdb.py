@@ -2,12 +2,23 @@
 # PLACE AT: /app/modules/imdb.py
 # ACTION: Replace existing file
 # ====================================================================
+"""
+imdb.py — IMDB lookup. PTB v20 async.
+Fixes:
+  ✅ async handler
+  ✅ await on all bot calls
+  ✅ ParseMode from telegram.constants
+  ✅ blocking HTTP in executor
+  ✅ HTML-escaped output
+"""
+import asyncio
+import html
 import re
 
-import bs4
 import requests
-from telegram import Update, ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackContext
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
 
 from beataniversebot_compat import dispatcher
 from modules.disable import DisableAbleCommandHandler
@@ -22,172 +33,162 @@ HEADERS = {
 }
 
 
-def fetch_imdb(movie_name: str) -> dict:
-    """Scrape IMDB and return a dict of movie details."""
-    remove_space = movie_name.split(" ")
-    final_name = "+".join(remove_space)
+def _fetch_imdb_sync(movie_name: str) -> dict:
+    try:
+        import bs4
+    except ImportError:
+        return {"error": "bs4 not installed"}
 
-    search_url = f"https://www.imdb.com/find?ref_=nv_sr_fn&q={final_name}&s=all"
-    page = requests.get(search_url, headers=HEADERS, timeout=10)
-    soup = bs4.BeautifulSoup(page.content, "lxml")
+    try:
+        q           = "+".join(movie_name.split())
+        search_url  = f"https://www.imdb.com/find?ref_=nv_sr_fn&q={q}&s=all"
+        page        = requests.get(search_url, headers=HEADERS, timeout=12)
+        soup        = bs4.BeautifulSoup(page.content, "lxml")
 
-    # Try new IMDB layout first, fall back to old
-    odds = soup.findAll("tr", "odd") or soup.findAll("li", {"class": "find-result-item"})
-    if not odds:
-        return {}
+        odds = soup.findAll("tr", "odd") or soup.findAll("li", {"class": "find-result-item"})
+        if not odds:
+            return {}
 
-    first = odds[0]
-    link_tag = first.find("a")
-    if not link_tag:
-        return {}
+        first    = odds[0]
+        link_tag = first.find("a")
+        if not link_tag:
+            return {}
 
-    mov_title = link_tag.text.strip()
-    mov_link = "https://www.imdb.com" + link_tag["href"].split("?")[0]
+        mov_title = link_tag.text.strip()
+        mov_link  = "https://www.imdb.com" + link_tag["href"].split("?")[0]
 
-    page1 = requests.get(mov_link, headers=HEADERS, timeout=10)
-    soup = bs4.BeautifulSoup(page1.content, "lxml")
+        page1 = requests.get(mov_link, headers=HEADERS, timeout=12)
+        soup  = bs4.BeautifulSoup(page1.content, "lxml")
 
-    # Poster
-    poster = ""
-    if soup.find("div", "poster"):
-        img = soup.find("div", "poster").find("img")
-        if img:
-            poster = img.get("src", "")
+        poster = ""
+        if soup.find("div", "poster"):
+            img = soup.find("div", "poster").find("img")
+            if img:
+                poster = img.get("src", "")
 
-    # Details
-    mov_details = ""
-    if soup.find("div", "title_wrapper"):
-        pg = soup.find("div", "title_wrapper").findNext("div").text
-        mov_details = re.sub(r"\s+", " ", pg).strip()
+        mov_details = ""
+        if soup.find("div", "title_wrapper"):
+            pg          = soup.find("div", "title_wrapper").findNext("div").text
+            mov_details = re.sub(r"\s+", " ", pg).strip()
 
-    # Credits
-    director = writer = stars = "Not available"
-    credits = soup.findAll("div", "credit_summary_item")
-    if len(credits) >= 1:
-        director = credits[0].a.text if credits[0].a else "Not available"
-    if len(credits) >= 3:
-        writer = credits[1].a.text if credits[1].a else "Not available"
-        actors = [x.text for x in credits[2].findAll("a")]
-        if actors:
+        director = writer = stars = "N/A"
+        credits  = soup.findAll("div", "credit_summary_item")
+        if len(credits) >= 1:
+            director = credits[0].a.text if credits[0].a else "N/A"
+        if len(credits) >= 3:
+            writer = credits[1].a.text if credits[1].a else "N/A"
+            actors = [x.text for x in credits[2].findAll("a")]
             actors = [a for a in actors if "full cast" not in a.lower()]
-            stars = ", ".join(actors[:3])
-    elif len(credits) == 2:
-        writer = "Not available"
-        actors = [x.text for x in credits[1].findAll("a")]
-        if actors:
+            stars  = ", ".join(actors[:3]) or "N/A"
+        elif len(credits) == 2:
+            actors = [x.text for x in credits[1].findAll("a")]
             actors = [a for a in actors if "full cast" not in a.lower()]
-            stars = ", ".join(actors[:3])
+            stars  = ", ".join(actors[:3]) or "N/A"
 
-    # Story line
-    story_line = "Not available"
-    if soup.find("div", "inline canwrap"):
-        paras = soup.find("div", "inline canwrap").findAll("p")
-        if paras:
-            story_line = paras[0].text.strip()
+        story_line = "N/A"
+        if soup.find("div", "inline canwrap"):
+            paras = soup.find("div", "inline canwrap").findAll("p")
+            if paras:
+                story_line = paras[0].text.strip()
 
-    # Country / Language
-    mov_country = mov_language = "Not available"
-    info_blocks = soup.findAll("div", "txt-block")
-    countries, languages = [], []
-    for node in info_blocks:
-        for a in node.findAll("a"):
-            if "country_of_origin" in a.get("href", ""):
-                countries.append(a.text)
-            elif "primary_language" in a.get("href", ""):
-                languages.append(a.text)
-    if countries:
-        mov_country = countries[0]
-    if languages:
-        mov_language = languages[0]
+        countries = []
+        languages = []
+        for node in soup.findAll("div", "txt-block"):
+            for a in node.findAll("a"):
+                if "country_of_origin" in a.get("href", ""):
+                    countries.append(a.text)
+                elif "primary_language" in a.get("href", ""):
+                    languages.append(a.text)
 
-    # Rating
-    mov_rating = "Not available"
-    for r in soup.findAll("div", "ratingValue"):
-        if r.strong:
-            mov_rating = r.strong.get("title", "Not available")
-            break
+        mov_rating = "N/A"
+        for r in soup.findAll("div", "ratingValue"):
+            if r.strong:
+                mov_rating = r.strong.get("title", "N/A")
+                break
 
-    return {
-        "title": mov_title,
-        "link": mov_link,
-        "poster": poster,
-        "details": mov_details,
-        "rating": mov_rating,
-        "country": mov_country,
-        "language": mov_language,
-        "director": director,
-        "writer": writer,
-        "stars": stars,
-        "story": story_line,
-    }
+        return {
+            "title":    mov_title,
+            "link":     mov_link,
+            "poster":   poster,
+            "details":  mov_details,
+            "rating":   mov_rating,
+            "country":  countries[0] if countries else "N/A",
+            "language": languages[0] if languages else "N/A",
+            "director": director,
+            "writer":   writer,
+            "stars":    stars,
+            "story":    story_line,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
-def imdb(update: Update, context: CallbackContext):
+async def imdb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    args = context.args
 
-    if not args:
-        message.reply_text(
-            "Usage: `/imdb <movie or anime name>`",
+    if not context.args:
+        await message.reply_text(
+            "Usage: <code>/imdb &lt;movie or anime name&gt;</code>",
             parse_mode=ParseMode.HTML,
         )
         return
 
-    movie_name = " ".join(args)
-    msg = message.reply_text(f"🔍 Searching IMDB for *{movie_name}*...", parse_mode=ParseMode.HTML)
-
-    try:
-        data = fetch_imdb(movie_name)
-    except Exception as e:
-        msg.edit_text(f"❌ Error fetching data: `{e}`", parse_mode=ParseMode.HTML)
-        return
-
-    if not data:
-        msg.edit_text("❌ Movie not found! Please enter a valid name.")
-        return
-
-    caption = (
-        f"<a href='{data['poster']}'>&#8203;</a>"
-        f"<b>🎬 Title:</b> <code>{data['title']}</code>\n"
-        f"<code>{data['details']}</code>\n"
-        f"<b>⭐ Rating:</b> <code>{data['rating']}</code>\n"
-        f"<b>🌍 Country:</b> <code>{data['country']}</code>\n"
-        f"<b>🗣 Language:</b> <code>{data['language']}</code>\n"
-        f"<b>🎥 Director:</b> <code>{data['director']}</code>\n"
-        f"<b>✍️ Writer:</b> <code>{data['writer']}</code>\n"
-        f"<b>🌟 Stars:</b> <code>{data['stars']}</code>\n\n"
-        f"<b>📖 Story:</b> {data['story'][:500]}{'...' if len(data['story']) > 500 else ''}"
+    movie_name = " ".join(context.args)
+    msg = await message.reply_text(
+        f"🔍 Searching IMDB for <b>{html.escape(movie_name)}</b>…",
+        parse_mode=ParseMode.HTML,
     )
 
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔗 View on IMDB", url=data["link"])]
-    ])
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, _fetch_imdb_sync, movie_name)
 
-    msg.delete()
+    if not data or "error" in data:
+        err = data.get("error", "Movie not found") if data else "Movie not found"
+        await msg.edit_text(f"❌ {html.escape(err)}", parse_mode=ParseMode.HTML)
+        return
+
+    story   = data["story"]
+    caption = (
+        f"<a href='{data['poster']}'>&#8203;</a>"
+        f"<b>🎬 {html.escape(data['title'])}</b>\n"
+        f"<code>{html.escape(data['details'])}</code>\n\n"
+        f"⭐ <b>Rating:</b> <code>{html.escape(data['rating'])}</code>\n"
+        f"🌍 <b>Country:</b> <code>{html.escape(data['country'])}</code>\n"
+        f"🗣 <b>Language:</b> <code>{html.escape(data['language'])}</code>\n"
+        f"🎥 <b>Director:</b> <code>{html.escape(data['director'])}</code>\n"
+        f"✍️ <b>Writer:</b> <code>{html.escape(data['writer'])}</code>\n"
+        f"🌟 <b>Stars:</b> <code>{html.escape(data['stars'])}</code>\n\n"
+        f"📖 <b>Story:</b> {html.escape(story[:500])}{'…' if len(story) > 500 else ''}"
+    )
+    buttons = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔗 View on IMDB", url=data["link"])
+    ]])
+
     try:
-        message.reply_text(
-            caption,
-            parse_mode=ParseMode.HTML,
-            reply_markup=buttons,
-            disable_web_page_preview=False,
+        await msg.delete()
+    except Exception:
+        pass
+
+    try:
+        await message.reply_text(
+            caption, parse_mode=ParseMode.HTML,
+            reply_markup=buttons, disable_web_page_preview=False,
         )
     except Exception:
-        # If poster link causes issues, send without it
-        message.reply_text(
+        await message.reply_text(
             caption.replace(f"<a href='{data['poster']}'>&#8203;</a>", ""),
             parse_mode=ParseMode.HTML,
-            reply_markup=buttons,
-            disable_web_page_preview=True,
+            reply_markup=buttons, disable_web_page_preview=True,
         )
 
 
 IMDB_HANDLER = DisableAbleCommandHandler("imdb", imdb, run_async=True)
 dispatcher.add_handler(IMDB_HANDLER)
 
-__mod_name__ = "IMDb"
+__mod_name__     = "IMDb"
 __command_list__ = ["imdb"]
-__handlers__ = [IMDB_HANDLER]
+__handlers__     = [IMDB_HANDLER]
 __help__ = """
 *IMDb Search:*
- • `/imdb <name>`*:* get IMDb details for any movie or anime.
+ • /imdb <name> — get IMDb details for any movie or anime.
 """
