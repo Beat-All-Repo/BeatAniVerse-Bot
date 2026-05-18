@@ -172,11 +172,46 @@ class _LazyDispatcher:
         self._real = None
         self._queue = []   # list of (method_name, args, kwargs)
 
+    @staticmethod
+    def _make_async_if_needed(callback):
+        """
+        PTB v20 requires all handler callbacks to be async coroutines.
+        If a sync function is registered (PTB v13 style), wrap it transparently.
+        """
+        import asyncio, inspect, functools
+        if asyncio.iscoroutinefunction(callback):
+            return callback   # already async — nothing to do
+        @functools.wraps(callback)
+        async def _async_wrapper(update, context, *a, **kw):
+            try:
+                result = callback(update, context, *a, **kw)
+                if asyncio.iscoroutine(result):
+                    return await result
+                return result
+            except Exception as exc:
+                import logging
+                logging.getLogger("compat_wrapper").debug(
+                    f"[sync→async] {callback.__name__} raised: {exc}"
+                )
+        return _async_wrapper
+
     def _replay(self):
         if self._real is None:
             return
         for method, args, kwargs in self._queue:
             try:
+                # For add_handler: wrap any sync callback automatically
+                if method == "add_handler" and args:
+                    handler = args[0]
+                    cb_attr = "callback"
+                    if hasattr(handler, cb_attr):
+                        orig_cb = getattr(handler, cb_attr)
+                        wrapped = self._make_async_if_needed(orig_cb)
+                        if wrapped is not orig_cb:
+                            try:
+                                setattr(handler, cb_attr, wrapped)
+                            except (AttributeError, TypeError):
+                                pass
                 getattr(self._real, method)(*args, **kwargs)
             except Exception as exc:
                 import logging
