@@ -2,86 +2,126 @@
 # PLACE AT: /app/modules/translator.py
 # ACTION: Replace existing file
 # ====================================================================
+"""
+translator.py — PTB v20 async. Blocking translate call run in executor.
+"""
+import asyncio
+import html as _html
+
 try:
     from gpytranslate import SyncTranslator
+    _TRANS_LIB = "gpytranslate"
 except ImportError:
-    try:
-        from deep_translator import GoogleTranslator as _GT
-        class SyncTranslator:
-            def __call__(self, text, sourcelang="auto", targetlang="en"):
-                class _R:
-                    pass
-                r = _R()
-                try:
-                    r.text = _GT(source=sourcelang, target=targetlang).translate(text)
-                except Exception:
-                    r.text = text
-                return r
-    except ImportError:
-        class SyncTranslator:
-            def __call__(self, text, sourcelang="auto", targetlang="en"):
-                class _R:
-                    text = text
-                return _R()
-from telegram import ParseMode, Update
-from telegram.ext import CallbackContext
+    SyncTranslator = None
+    _TRANS_LIB = None
+
+try:
+    from deep_translator import GoogleTranslator as _GT
+    _TRANS_LIB = _TRANS_LIB or "deep_translator"
+except ImportError:
+    _GT = None
+
+
+def _detect_lang_sync(text: str) -> str:
+    """Best-effort language detection."""
+    if SyncTranslator:
+        try:
+            t = SyncTranslator()
+            return t.detect(text) or "auto"
+        except Exception:
+            pass
+    return "auto"
+
+
+def _translate_sync(text: str, source: str, dest: str) -> str:
+    if SyncTranslator:
+        try:
+            t   = SyncTranslator()
+            res = t(text, sourcelang=source, targetlang=dest)
+            return res.text
+        except Exception as e:
+            return f"[translation error: {e}]"
+    if _GT:
+        try:
+            src = "auto" if source in ("auto", "") else source
+            return _GT(source=src, target=dest).translate(text)
+        except Exception as e:
+            return f"[translation error: {e}]"
+    return "[no translation library installed — pip install gpytranslate]"
+
+
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
 
 from beataniversebot_compat import dispatcher
 from modules.disable import DisableAbleCommandHandler
 
-trans = SyncTranslator()
 
-
-def totranslate(update: Update, context: CallbackContext) -> None:
-    message = update.effective_message
+async def totranslate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message   = update.effective_message
     reply_msg = message.reply_to_message
-    if not reply_msg:
-        message.reply_text(
-            "Reply to messages or write messages from other languages for translating into the intended language\n\n"
-            "Example: `/tr en-hi` to translate from English to Hindi\n"
-            "Or use: `/tr en` for automatic detection and translating it into english.\n"
-            "Click here to see [List of available Language Codes](https://te.legra.ph/LANGUAGE-CODES-05-23-2).",
-            parse_mode="markdown",
-            disable_web_page_preview=True,
-        )
-        return
-    if reply_msg.caption:
-        to_translate = reply_msg.caption
-    elif reply_msg.text:
-        to_translate = reply_msg.text
-    try:
-        args = message.text.split()[1].lower()
-        if "//" in args:
-            source = args.split("//")[0]
-            dest = args.split("//")[1]
-        else:
-            source = trans.detect(to_translate)
-            dest = args
-    except IndexError:
-        source = trans.detect(to_translate)
-        dest = "en"
-    translation = trans(to_translate, sourcelang=source, targetlang=dest)
-    reply = (
-        f"<b>ᴛʀᴀɴsʟᴀᴛᴇᴅ ғʀᴏᴍ {source} ᴛᴏ {dest}</b> :\n"
-        f"<code>{translation.text}</code>"
+
+    usage = (
+        "Reply to a message and use:\n"
+        "• <code>/tr en</code> — auto-detect → English\n"
+        "• <code>/tr hi//en</code> — Hindi → English\n"
+        "• <code>/tr de</code> — auto-detect → German\n\n"
+        '<a href="https://te.legra.ph/LANGUAGE-CODES-05-23-2">📋 Language Codes</a>'
     )
 
-    message.reply_text(reply, parse_mode=ParseMode.HTML)
+    if not reply_msg:
+        await message.reply_text(usage, parse_mode=ParseMode.HTML,
+                                 disable_web_page_preview=True)
+        return
+
+    to_translate = (reply_msg.caption or reply_msg.text or "").strip()
+    if not to_translate:
+        await message.reply_text("❌ Nothing to translate in that message.")
+        return
+
+    args = context.args
+    loop = asyncio.get_event_loop()
+
+    try:
+        if args:
+            raw = args[0].lower()
+            if "//" in raw:
+                source, dest = raw.split("//", 1)
+            else:
+                source = await loop.run_in_executor(None, _detect_lang_sync, to_translate)
+                dest   = raw
+        else:
+            source = await loop.run_in_executor(None, _detect_lang_sync, to_translate)
+            dest   = "en"
+    except Exception:
+        source, dest = "auto", "en"
+
+    translated = await loop.run_in_executor(None, _translate_sync, to_translate, source, dest)
+
+    reply = (
+        f"<b>Translated</b>  <code>{_html.escape(source)}</code> → <code>{_html.escape(dest)}</code>\n\n"
+        f"<code>{_html.escape(translated)}</code>"
+    )
+    await message.reply_text(reply, parse_mode=ParseMode.HTML)
 
 
 __help__ = """
- ❍ /tr or /tl (language code) as reply to a long message
-*Example:* 
- ❍ /tr en*:* translates something to english
- ❍ /tr hi-en*:* translates hindi to english
+*Translator*
 
-[ʟᴀɴɢᴜᴀɢᴇ ᴄᴏᴅᴇs](https://te.legra.ph/LANGUAGE-CODES-05-23-2)
+ ❍ /tr <lang> — translate replied-to message
+ ❍ /tl <lang> — same
+
+*Examples:*
+ `/tr en` — auto-detect → English
+ `/tr hi//en` — Hindi → English
+
+[ Language Codes](https://te.legra.ph/LANGUAGE-CODES-05-23-2)
 """
 __mod_name__ = "Tʀᴀɴsʟᴀᴛᴏʀ"
 
 TRANSLATE_HANDLER = DisableAbleCommandHandler(["tr", "tl"], totranslate, run_async=True)
-
 dispatcher.add_handler(TRANSLATE_HANDLER)
 
 __command_list__ = ["tr", "tl"]
-__handlers__ = [TRANSLATE_HANDLER]
+__handlers__     = [TRANSLATE_HANDLER]
