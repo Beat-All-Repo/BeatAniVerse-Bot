@@ -306,33 +306,75 @@ async def setrules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("✅ Rules saved!", parse_mode=ParseMode.HTML)
 
 async def chatbot_private_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text: return
-    await _chatbot_reply(update, context, update.message.text)
+    """DMs: always reply to any text."""
+    if not update.message or not update.message.text:
+        return
+    await _chatbot_reply(update, context, update.message.text, is_private=True)
+
 
 async def chatbot_group_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text: return
-    text = update.message.text.strip()
-    bot_username = context.bot.username or ""
-    triggered = False
-    if f"@{bot_username}" in text:
-        text = text.replace(f"@{bot_username}", "").strip()
-        triggered = True
-    elif update.message.reply_to_message and update.message.reply_to_message.from_user:
-        if update.message.reply_to_message.from_user.id == context.bot.id:
-            triggered = True
-    if triggered:
-        await _chatbot_reply(update, context, text)
+    """
+    GC chatbot handler.
+    - If chatbot is FULLY ENABLED for this chat (via /chatbot → Enable): reply to ANY text
+    - If chatbot is trigger-only (default): only reply on @mention / reply / keyword 'beatverse'
+    """
+    if not update.message or not update.message.text:
+        return
 
-async def _chatbot_reply(update: Update, context, text: str) -> None:
-    """Route to new dual chatbot engine (Gemini + Groq)."""
-    chat_id = update.effective_chat.id
+    chat_id      = update.effective_chat.id
+    text         = update.message.text.strip()
+    bot_username = (context.bot.username or "").lower()
+    bot_id       = context.bot.id
+    msg          = update.message
+
+    # ── Check if chatbot is fully enabled for this group ──────────────────────
+    chatbot_fully_on = False
+    try:
+        import modules.sql.chatbot_sql as _cb_sql
+        chatbot_fully_on = _cb_sql.is_chatbot_active(chat_id)
+    except Exception:
+        # Fallback: check engine DB key
+        try:
+            from core.chatbot_engine import get_chatbot_enabled
+            chatbot_fully_on = get_chatbot_enabled(chat_id)
+        except Exception:
+            pass
+
+    if chatbot_fully_on:
+        # Full mode: reply to everything
+        await _chatbot_reply(update, context, text, is_private=False)
+        return
+
+    # ── Trigger-only mode: check mention / reply / keyword ───────────────────
+    triggered = False
+    clean_text = text
+
+    if bot_username and f"@{bot_username}" in text.lower():
+        clean_text = text.replace(f"@{bot_username}", "").replace(f"@{bot_username.upper()}", "").strip()
+        triggered = True
+    elif msg.reply_to_message and msg.reply_to_message.from_user:
+        if msg.reply_to_message.from_user.id == bot_id:
+            triggered = True
+    elif re.search(r"\bbeatverse\b", text, re.IGNORECASE):
+        triggered = True
+
+    if triggered:
+        await _chatbot_reply(update, context, clean_text or text, is_private=False)
+
+
+async def _chatbot_reply(update: Update, context, text: str, is_private: bool = False) -> None:
+    """
+    Route to chatbot engine (Gemini/Groq) with fallback to modules/chatbot.py simple engine.
+    """
+    chat_id  = update.effective_chat.id
     user_msg = text.strip()
     if not user_msg:
         return
 
-    user = update.effective_user
-    user_id = user.id if user else 0
+    user      = update.effective_user
+    user_id   = user.id if user else 0
     user_name = (user.first_name or "User") if user else "User"
+    bot_name  = getattr(context.bot, "first_name", "Bot") or "Bot"
 
     try:
         await context.bot.send_chat_action(chat_id, "typing")
@@ -354,9 +396,11 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
         _sent_chatbot_msg = sent
         return sent
 
+    # ── Try the full dual-AI engine first ────────────────────────────────────
+    engine_replied = False
     try:
         from core.chatbot_engine import handle_chatbot_message
-        await handle_chatbot_message(
+        engine_replied = await handle_chatbot_message(
             bot=context.bot,
             chat_id=chat_id,
             user_id=user_id,
@@ -367,18 +411,36 @@ async def _chatbot_reply(update: Update, context, text: str) -> None:
     except Exception as exc:
         logger.debug(f"[chatbot] engine error: {exc}")
 
-    # chat_id for auto-delete middleware below
-    chat_id = update.effective_chat.id if update.effective_chat else 0
+    # ── Fallback: modules/chatbot.py simple engine (no API key needed) ────────
+    if not engine_replied:
+        try:
+            from modules.chatbot import _get_reply as _simple_reply
+            reply_text = _get_simple_reply(chat_id, user_msg, bot_name)
+            if reply_text:
+                await _send_reply(reply_text)
+        except Exception as exc:
+            logger.debug(f"[chatbot] simple fallback error: {exc}")
+
+    # ── Auto-delete middleware (exempt chatbot replies in GC) ─────────────────
     try:
         from core.auto_delete import auto_delete_middleware
         await auto_delete_middleware(
             bot          = context.bot,
             sent_msg     = _sent_chatbot_msg,
             trigger_msg  = update.message,
-            is_chatbot   = True,   # ← exempts GC chatbot replies from deletion
+            is_chatbot   = True,
         )
     except Exception:
         pass
+
+
+def _get_simple_reply(chat_id: int, text: str, bot_name: str) -> str:
+    """Wrapper around modules/chatbot.py's _get_reply for use as fallback."""
+    try:
+        from modules.chatbot import _get_reply
+        return _get_reply(chat_id, text, bot_name)
+    except Exception:
+        return ""
 
 
 # ── User Features Panel ────────────────────────────────────────────────────────
