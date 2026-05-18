@@ -281,6 +281,63 @@ _AIRING_GQL = """query($s:String){Media(search:$s,type:ANIME,sort:[SEARCH_MATCH,
   nextAiringEpisode{episode timeUntilAiring}}}"""
 
 
+# ── Per-user poster session tracking ─────────────────────────────────────────
+# Each session lasts _SESSION_TTL seconds (6 hrs).
+# Poster-generation commands count against the limit.
+# "Next Image" clicks do NOT count — they only change the background.
+# After session expires the counter resets on next command use.
+
+_SESSION_TTL: int = 21600          # 6 hours in seconds
+_DEFAULT_POSTER_LIMIT: int = 10    # posters per 6-hr session (override via env)
+
+# {user_id: {"start": float, "count": int}}
+_user_sessions: Dict[int, dict] = {}
+
+
+def _get_poster_limit() -> int:
+    try:
+        return int(_os.getenv("POSTER_SESSION_LIMIT", str(_DEFAULT_POSTER_LIMIT)))
+    except Exception:
+        return _DEFAULT_POSTER_LIMIT
+
+
+def _check_session(user_id: int) -> Tuple[bool, int, int]:
+    """
+    Returns (allowed, count_used, limit).
+    Resets session if TTL has elapsed.
+    """
+    now     = time.time()
+    session = _user_sessions.get(user_id, {})
+    limit   = _get_poster_limit()
+
+    if session and (now - session.get("start", 0)) < _SESSION_TTL:
+        count = session.get("count", 0)
+        return count < limit, count, limit
+    else:
+        # New or expired session — reset
+        _user_sessions[user_id] = {"start": now, "count": 0}
+        return True, 0, limit
+
+
+def _increment_session(user_id: int) -> None:
+    """Increment poster count for current session."""
+    now     = time.time()
+    session = _user_sessions.get(user_id, {})
+    if session and (now - session.get("start", 0)) < _SESSION_TTL:
+        session["count"] = session.get("count", 0) + 1
+    else:
+        _user_sessions[user_id] = {"start": now, "count": 1}
+
+
+def _session_remaining_secs(user_id: int) -> int:
+    """Seconds until current session expires (0 if no active session)."""
+    session = _user_sessions.get(user_id, {})
+    if not session:
+        return 0
+    elapsed = time.time() - session.get("start", 0)
+    return max(0, int(_SESSION_TTL - elapsed))
+
+
 def _normalise(q: str) -> str:
     return re.sub(r"[^\w\s]", "", q.lower()).strip()
 
@@ -502,7 +559,7 @@ async def _generate_poster_buf(
         return None
 
 
-def _build_caption(data: Dict, lang: str = "") -> str:
+def _build_caption(data: Dict, lang: str = "", media_type: str = "ANIME") -> str:
     t_d    = data.get("title", {}) or {}
     eng    = t_d.get("english") or t_d.get("romaji") or "Unknown"
     native = t_d.get("native", "")
@@ -517,15 +574,9 @@ def _build_caption(data: Dict, lang: str = "") -> str:
     # Try custom caption template from category settings
     try:
         from handlers.post_gen import get_category_settings
-        import inspect as _inspect
-        # Determine category from caller context (best effort)
-        _cat = "anime"
-        _frame = _inspect.currentframe()
-        if _frame and _frame.f_back:
-            _local_media_type = _frame.f_back.f_locals.get("media_type", "ANIME")
-            if isinstance(_local_media_type, str):
-                _cat = {"ANIME": "anime", "MANGA": "manga", "MOVIE": "movie", "TV": "tvshow"}.get(
-                    _local_media_type.upper(), "anime")
+        # Map media_type → category key used in admin settings
+        _cat = {"ANIME": "anime", "MANGA": "manga", "MOVIE": "movie", "TV": "tvshow"}.get(
+            str(media_type).upper(), "anime")
         settings = get_category_settings(_cat)
         tmpl = settings.get("caption_template", "")
         if tmpl:
@@ -541,17 +592,50 @@ def _build_caption(data: Dict, lang: str = "") -> str:
                     _join_link = get_setting("env_PUBLIC_ANIME_CHANNEL_URL", "") or PUBLIC_ANIME_CHANNEL_URL
             except Exception:
                 pass
-            cap = (tmpl.replace("{title}", _e(eng))
-                      .replace("{native}", _e(native))
-                      .replace("{genres}", _e(genres))
-                      .replace("{score}", str(score))
-                      .replace("{status}", _e(status))
-                      .replace("{episodes}", str(eps))
-                      .replace("{format}", _e(fmt))
-                      .replace("{studio}", _e(studio))
-                      .replace("{lang}", _e(lang) if lang else "")
-                      .replace("{language}", _e(lang) if lang else "")
-                      .replace("{link}", _join_link))
+            # Extra fields for extended tag support
+            _synopsis = _clean(data.get("description", ""), 400)
+            _year     = str(
+                data.get("seasonYear", "")
+                or (data.get("startDate") or {}).get("year", "")
+                or ""
+            )
+            _season_name = (data.get("season") or "").replace("_", " ").title()
+            _members     = str(data.get("popularity", "") or "")
+            _duration    = str(data.get("duration", "") or "")
+            _country     = data.get("countryOfOrigin", "") or ""
+
+            cap = (
+                tmpl
+                .replace("{title}",       _e(eng))
+                .replace("{native}",      _e(native))
+                .replace("{genres}",      _e(genres))
+                .replace("{genre}",       _e(genres))
+                .replace("{score}",       str(score))
+                .replace("{rating}",      str(score))
+                .replace("{status}",      _e(status))
+                .replace("{episodes}",    str(eps))
+                .replace("{eps}",         str(eps))
+                .replace("{total_ep}",    str(eps))
+                .replace("{totalep}",     str(eps))
+                .replace("{format}",      _e(fmt))
+                .replace("{type}",        _e(fmt))
+                .replace("{studio}",      _e(studio))
+                .replace("{lang}",        _e(lang) if lang else "")
+                .replace("{language}",    _e(lang) if lang else "")
+                .replace("{audio}",       _e(lang) if lang else "")
+                .replace("{link}",        _join_link)
+                .replace("{synopsis}",    _e(_synopsis))
+                .replace("{description}", _e(_synopsis))
+                .replace("{desc}",        _e(_synopsis))
+                .replace("{year}",        _year)
+                .replace("{season_year}", _year)
+                .replace("{season}",      _e(_season_name))
+                .replace("{season_name}", _e(_season_name))
+                .replace("{members}",     _members)
+                .replace("{popularity}",  _members)
+                .replace("{duration}",    _duration)
+                .replace("{country}",     _e(_country))
+            )
             return cap[:1024]
     except Exception:
         pass
@@ -580,7 +664,12 @@ def _build_caption(data: Dict, lang: str = "") -> str:
     return cap[:1024]
 
 
-def _info_kb(data: Dict, lang: str = "") -> InlineKeyboardMarkup:
+def _info_kb(data: Dict, lang: str = "", show_actions: bool = True) -> InlineKeyboardMarkup:
+    """
+    Poster inline keyboard.
+    show_actions=True  → includes NEXT IMG / CANCEL / SEND TO CHANNEL (fresh poster)
+    show_actions=False → info + join only (already-finalised poster)
+    """
     from core.config import PUBLIC_ANIME_CHANNEL_URL, JOIN_BTN_TEXT
     site  = data.get("siteUrl", "")
     t_d   = data.get("title", {}) or {}
@@ -588,21 +677,22 @@ def _info_kb(data: Dict, lang: str = "") -> InlineKeyboardMarkup:
 
     rows: List[List] = []
 
-    # Row 1: AniList info button
-    info_row = []
+    # Row 1: AniList info + NEXT IMG (actions)
+    top_row = []
     if site:
-        info_row.append(InlineKeyboardButton(_sc("📋 ɪɴꜰᴏ"), url=site))
-    if info_row:
-        rows.append(info_row)
+        top_row.append(InlineKeyboardButton(_sc("📋 ɪɴꜰᴏ"), url=site))
+    if show_actions:
+        top_row.append(InlineKeyboardButton(_sc("🔜 ɴᴇxᴛ ɪᴍɢ"), callback_data="anthmb_next"))
+    if top_row:
+        rows.append(top_row)
 
-    # Row 2: "Join Now to Watch" button — try to get join_request link from DB
+    # Row 2: "Join Now to Watch"
     join_url = None
     if title:
         try:
             from database_dual import get_anime_channel_links
             links = get_anime_channel_links(title)
             if links:
-                # links = [(channel_id, channel_title, link_id), ...]
                 link_id = links[0][2] if len(links[0]) > 2 else None
                 if link_id:
                     try:
@@ -613,7 +703,6 @@ def _info_kb(data: Dict, lang: str = "") -> InlineKeyboardMarkup:
                     except Exception:
                         pass
                 if not join_url:
-                    # Try channel invite link directly
                     cid = links[0][0]
                     try:
                         from database_dual import get_setting
@@ -623,19 +712,17 @@ def _info_kb(data: Dict, lang: str = "") -> InlineKeyboardMarkup:
         except Exception:
             pass
 
-    # Fallback to main anime channel
     if not join_url:
         join_url = PUBLIC_ANIME_CHANNEL_URL
 
-    try:
-        from database_dual import get_setting
-        join_txt = get_setting("env_JOIN_BTN_TEXT", "") or JOIN_BTN_TEXT
-    except Exception:
-        join_txt = JOIN_BTN_TEXT
+    rows.append([InlineKeyboardButton("ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=join_url)])
 
-    rows.append([InlineKeyboardButton(
-        f"ᴊᴏɪɴ ɴᴏᴡ ᴛᴏ ᴡᴀᴛᴄʜ", url=join_url
-    )])
+    # Row 3: Send to channel + Cancel (actions only)
+    if show_actions:
+        rows.append([
+            InlineKeyboardButton(_sc("📤 ᴄʜᴀɴɴᴇʟ"), callback_data="anthmb_send_main"),
+            InlineKeyboardButton(_sc("❌ ᴄʟᴏsᴇ"),    callback_data="anthmb_cancel"),
+        ])
 
     return InlineKeyboardMarkup(rows)
 
@@ -699,7 +786,7 @@ async def _show_similar_panel(
         InlineKeyboardButton(_sc("❌ Cancel"),         callback_data="anpick_cancel"),
     ])
 
-    # Delete any existing flow panels before sending new
+    # Delete any existing flow panels + strip action buttons from prev poster
     for key in ("_sim_panel_id", "_lang_panel_id", "_size_panel_id"):
         old_mid = context.user_data.pop(key, None)
         if old_mid:
@@ -707,6 +794,20 @@ async def _show_similar_panel(
                 await context.bot.delete_message(msg.chat_id, old_mid)
             except Exception:
                 pass
+    # Strip action buttons from any previous poster message
+    _prev_pid  = context.user_data.get("poster_msg_id")
+    _prev_pcid = context.user_data.get("poster_chat_id")
+    _prev_dat  = context.user_data.get("poster_data", {})
+    _prev_lg   = context.user_data.get("selected_lang", "")
+    if _prev_pid and _prev_pcid and _prev_dat:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=_prev_pcid,
+                message_id=_prev_pid,
+                reply_markup=_info_kb(_prev_dat, lang=_prev_lg, show_actions=False),
+            )
+        except Exception:
+            pass
 
     sent_sim = await msg.reply_text(
         _b("🎌 sᴇʟᴇᴄᴛ ᴇxᴀᴄᴛ ᴛɪᴛʟᴇ") + "\n"
@@ -831,8 +932,8 @@ async def _deliver_poster(
             pass
 
     lang    = context.user_data.get("selected_lang", "")
-    caption = _build_caption(data, lang=lang)
-    kb      = _info_kb(data, lang=lang)
+    caption = _build_caption(data, lang=lang, media_type=media_type)
+    kb      = _info_kb(data, lang=lang, show_actions=True)   # includes NEXT IMG / CLOSE
 
     sent_poster = None
 
@@ -870,44 +971,40 @@ async def _deliver_poster(
             except Exception:
                 pass
 
-    # Store state
+    # Store state — track bg_idx for cycling background images on NEXT IMG
     t_d    = data.get("title", {}) or {}
+    cov    = data.get("coverImage", {}) or {}
+
+    # Build background image cycle list: bannerImage → extraLarge → large
+    _bg_cycle_raw = [
+        data.get("bannerImage"),
+        cov.get("extraLarge"),
+        cov.get("large"),
+        cov.get("medium"),
+    ]
+    _seen_bg: set = set()
+    bg_cycle: List[str] = []
+    for _u in _bg_cycle_raw:
+        if _u and _u not in _seen_bg:
+            _seen_bg.add(_u)
+            bg_cycle.append(_u)
+
     context.user_data.update({
-        "poster_data":       data,
-        "poster_media_type": media_type,
-        "poster_template":   template,
-        "poster_tmpl_idx":   TEMPLATES.index(template) if template in TEMPLATES else 0,
-        "poster_title":      t_d.get("english") or t_d.get("romaji") or "Unknown",
-        "poster_msg_id":     sent_poster.message_id if sent_poster else None,
-        "poster_chat_id":    msg.chat_id,
-        "awaiting_thumbnail": True,
+        "poster_data":            data,
+        "poster_media_type":      media_type,
+        "poster_template":        template,
+        "poster_tmpl_idx":        TEMPLATES.index(template) if template in TEMPLATES else 0,
+        "poster_title":           t_d.get("english") or t_d.get("romaji") or "Unknown",
+        "poster_msg_id":          sent_poster.message_id if sent_poster else None,
+        "poster_chat_id":         msg.chat_id,
+        "awaiting_thumbnail":     True,
         "awaiting_thumbnail_uid": msg.from_user.id if msg.from_user else None,
+        "_bg_cycle":              bg_cycle,      # list of image URLs to cycle
+        "_bg_idx":                0,             # current bg index (0 = default)
     })
-
-    # ── Message 2: Custom Thumbnail prompt (separate message, not joined) ─────
-    thumb_kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(_sc("🔜 ɴᴇxᴛ ɪᴍɢ"),    callback_data="anthmb_next"),
-            InlineKeyboardButton(_sc("sᴋɪᴘ"),             callback_data="anthmb_skip"),
-        ],
-        [InlineKeyboardButton(_sc("📤 sᴇɴᴅ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ"), callback_data="anthmb_send_main")],
-        [InlineKeyboardButton(_sc("❌ ᴄᴀɴᴄᴇʟ"),         callback_data="anthmb_cancel")],
-    ])
-
-    sent_thumb_prompt = await msg.reply_text(
-        "📸 <b>Cᴜsᴛᴏᴍ Tʜᴜᴍʙɴᴀɪʟ</b>\n\n"
-        "Sᴇɴᴅ ᴍᴇ ᴀ ᴄᴜsᴛᴏᴍ ᴛʜᴜᴍʙɴᴀɪʟ ɪᴍᴀɢᴇ, ᴏʀ ᴄʟɪᴄᴋ Sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴛʜɪs ᴘᴏsᴛᴇʀ.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=thumb_kb,
-    )
-    # Auto-delete the thumbnail prompt (NOT the poster itself)
-    if sent_thumb_prompt:
-        try:
-            from core.auto_delete import schedule_delete_msg
-            await schedule_delete_msg(msg.get_bot() if hasattr(msg, "get_bot") else context.bot,
-                                      sent_thumb_prompt)
-        except Exception:
-            pass
+    # NOTE: No second "Custom Thumbnail" prompt message is sent.
+    # All action buttons (NEXT IMG / CHANNEL / CLOSE) are embedded
+    # directly in the poster's inline keyboard via _info_kb(show_actions=True).
 
 
 # ── Callback handler ──────────────────────────────────────────────────────────
@@ -1030,37 +1127,64 @@ async def _anime_callback(
         await _deliver_poster(update, context, data, template, media_type)
         return
 
-    # ── Thumbnail: NEXT IMG — delete old, send completely new message with info ─
+    # ── Thumbnail: NEXT IMG — cycle background image, EDIT in-place ────────────
     if cb == "anthmb_next":
         data_dict  = context.user_data.get("poster_data")
         media_type = context.user_data.get("poster_media_type", "ANIME")
-        tmpl_idx   = context.user_data.get("poster_tmpl_idx", 0)
+        template   = context.user_data.get("poster_template", "ani")
 
         if not data_dict:
-            await query.answer(_sc("session expired"), show_alert=True)
+            await query.answer(_sc("⏰ session expired — use /anime again"), show_alert=True)
             return
 
-        # Advance to NEXT template (different visual style entirely)
-        tmpl_idx = (tmpl_idx + 1) % len(TEMPLATES)
-        new_tmpl = TEMPLATES[tmpl_idx]
-        context.user_data["poster_tmpl_idx"] = tmpl_idx
-        context.user_data["poster_template"] = new_tmpl
+        # ── Session expiry check (NEXT IMG does NOT count as a new poster) ──
+        session_remaining = _session_remaining_secs(uid)
+        if session_remaining == 0 and _user_sessions.get(uid, {}).get("count", 0) > 0:
+            await query.answer(
+                _sc("⏰ session expired (6 hrs). Use /anime to start fresh."),
+                show_alert=True,
+            )
+            return
+
+        # ── Cycle through background images (keep same template) ─────────────
+        bg_cycle = context.user_data.get("_bg_cycle", [])
+        bg_idx   = context.user_data.get("_bg_idx", 0)
+
+        if len(bg_cycle) > 1:
+            bg_idx = (bg_idx + 1) % len(bg_cycle)
+        elif not bg_cycle:
+            # Fallback: build from data
+            cov_d = data_dict.get("coverImage", {}) or {}
+            for _u in [data_dict.get("bannerImage"), cov_d.get("extraLarge"), cov_d.get("large")]:
+                if _u and _u not in bg_cycle:
+                    bg_cycle.append(_u)
+            bg_idx = min(bg_idx + 1, max(0, len(bg_cycle) - 1))
+
+        context.user_data["_bg_idx"]   = bg_idx
+        context.user_data["_bg_cycle"] = bg_cycle
+
+        # Create a shallow copy of data with the new background image
+        new_data = dict(data_dict)
+        if bg_cycle and bg_idx < len(bg_cycle):
+            new_bg = bg_cycle[bg_idx]
+            new_data = {**data_dict}
+            new_data["bannerImage"] = new_bg   # template uses bannerImage as backdrop
 
         try:
-            await query.answer(_sc(f"{TEMPLATE_LABELS.get(new_tmpl, new_tmpl)} style…"))
+            await query.answer(_sc(f"changing background… ({bg_idx + 1}/{max(1, len(bg_cycle))})"))
         except Exception:
             pass
 
         loading = None
         try:
             loading = await msg.reply_text(
-                _b(_sc(f"generating {TEMPLATE_LABELS.get(new_tmpl, new_tmpl)} style…")),
+                _b(_sc("🎨 generating new background…")),
                 parse_mode=ParseMode.HTML,
             )
         except Exception:
             pass
 
-        new_buf = await _generate_poster_buf(data_dict, media_type, new_tmpl)
+        new_buf = await _generate_poster_buf(new_data, media_type, template)
 
         if loading:
             try:
@@ -1075,10 +1199,11 @@ async def _anime_callback(
                 pass
             return
 
-        # EDIT existing poster in place (🔙🔜 style — no delete+resend)
+        # ALWAYS EDIT the existing poster message — never send a new one
+        lang         = context.user_data.get("selected_lang", "")
         prev_msg_id  = context.user_data.get("poster_msg_id")
         prev_chat_id = context.user_data.get("poster_chat_id")
-        edited = False
+
         if prev_msg_id and prev_chat_id:
             try:
                 new_buf.seek(0)
@@ -1087,68 +1212,70 @@ async def _anime_callback(
                     message_id=prev_msg_id,
                     media=InputMediaPhoto(
                         media=new_buf,
-                        caption=_build_caption(data_dict),
+                        caption=_build_caption(new_data, lang=lang, media_type=media_type),
                         parse_mode=ParseMode.HTML,
                     ),
-                    reply_markup=_info_kb(data_dict),
+                    reply_markup=_info_kb(new_data, lang=lang, show_actions=True),
                 )
-                edited = True
+                # Update stored data so future NEXT IMG uses latest state
+                context.user_data["poster_data"] = new_data
             except Exception as exc:
-                logger.debug(f"next img edit: {exc}")
-        if not edited:
-            try:
-                new_buf.seek(0)
-                sent = await msg.reply_photo(
-                    photo=new_buf,
-                    caption=_build_caption(data_dict),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=_info_kb(data_dict),
-                )
-                context.user_data["poster_msg_id"] = sent.message_id
-                context.user_data["poster_chat_id"] = msg.chat_id
-            except Exception as exc:
-                logger.debug(f"next img send: {exc}")
+                logger.debug(f"next img edit failed: {exc}")
+                # Don't send a new message — just answer with error
+                try:
+                    await query.answer(_sc("⚠️ could not update image"), show_alert=True)
+                except Exception:
+                    pass
         return
 
-    # ── Thumbnail: SKIP ───────────────────────────────────────────────────────
+    # ── Thumbnail: SKIP (close action buttons, keep poster) ──────────────────
     if cb == "anthmb_skip":
-        try:
-            await msg.delete()
-        except Exception:
-            pass
+        # Update poster keyboard to remove action buttons
+        data_d = context.user_data.get("poster_data", {})
+        lang   = context.user_data.get("selected_lang", "")
+        prev_msg_id  = context.user_data.get("poster_msg_id")
+        prev_chat_id = context.user_data.get("poster_chat_id")
+        if prev_msg_id and prev_chat_id:
+            try:
+                await query.bot.edit_message_reply_markup(
+                    chat_id=prev_chat_id,
+                    message_id=prev_msg_id,
+                    reply_markup=_info_kb(data_d, lang=lang, show_actions=False),
+                )
+            except Exception:
+                pass
         context.user_data.pop("awaiting_thumbnail", None)
         try:
-            await query.answer(_sc("✅ using this poster"))
+            await query.answer(_sc("✅ poster ready"))
         except Exception:
             pass
         return
 
     # ── Thumbnail: CANCEL ─────────────────────────────────────────────────────
     if cb == "anthmb_cancel":
-        try:
-            await msg.delete()
-        except Exception:
-            pass
+        # Remove action buttons from poster (keep poster itself, just strip NEXT IMG / CANCEL)
+        data_d = context.user_data.get("poster_data", {})
+        lang   = context.user_data.get("selected_lang", "")
         prev_msg_id  = context.user_data.get("poster_msg_id")
         prev_chat_id = context.user_data.get("poster_chat_id")
         if prev_msg_id and prev_chat_id:
             try:
-                await query.bot.delete_message(prev_chat_id, prev_msg_id)
+                await query.bot.edit_message_reply_markup(
+                    chat_id=prev_chat_id,
+                    message_id=prev_msg_id,
+                    reply_markup=_info_kb(data_d, lang=lang, show_actions=False),
+                )
             except Exception:
                 pass
-        context.user_data.clear()
+        context.user_data.pop("awaiting_thumbnail", None)
         try:
-            await query.answer(_sc("ᴄᴀɴᴄᴇʟʟᴇᴅ"))
+            await query.answer(_sc("✅ done"))
         except Exception:
             pass
         return
 
     # ── Send poster to main channel ───────────────────────────────────────────
     if cb == "anthmb_send_main":
-        try:
-            await msg.delete()
-        except Exception:
-            pass
         # Get main channel id from settings
         main_ch_id = None
         try:
@@ -1189,6 +1316,18 @@ async def _anime_callback(
                 await query.answer(_sc("✅ sᴇɴᴛ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀɴɴᴇʟ!"), show_alert=False)
             except Exception:
                 pass
+            # Strip action buttons from original poster after sending
+            lang_s = context.user_data.get("selected_lang", "")
+            data_s = context.user_data.get("poster_data", {})
+            if prev_msg_id and prev_chat_id:
+                try:
+                    await query.bot.edit_message_reply_markup(
+                        chat_id=prev_chat_id,
+                        message_id=prev_msg_id,
+                        reply_markup=_info_kb(data_s, lang=lang_s, show_actions=False),
+                    )
+                except Exception:
+                    pass
         else:
             try:
                 await query.answer(_sc("❌ ꜰᴀɪʟᴇᴅ ᴛᴏ sᴇɴᴅ — ᴄʜᴇᴄᴋ ʙᴏᴛ ᴘᴇʀᴍɪssɪᴏɴs"), show_alert=True)
@@ -1268,6 +1407,24 @@ async def anime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # ── Session limit check ─────────────────────────────────────────────
+    _uid = update.effective_user.id if update.effective_user else 0
+    _allowed, _used, _limit = _check_session(_uid)
+    if not _allowed:
+        _rh = _session_remaining_secs(_uid) // 3600
+        _rm = (_session_remaining_secs(_uid) % 3600) // 60
+        await update.message.reply_text(
+            _b("⏰ poster limit reached") + f" ({_used}/{_limit} this session)\n"
+            + _bq(_sc(
+                f"Session resets in {_rh}h {_rm}m. "
+                "Clicking Next Image does not count — "
+                "only new poster commands use the limit."
+            )),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    _increment_session(_uid)
+
     raw_q      = " ".join(context.args)
     base_q, sn = _extract_season(raw_q)
     resolved   = _resolve_query(base_q)
@@ -1277,7 +1434,16 @@ async def anime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "anime_query": resolved,
         "season_num":  sn,
     })
-    # Step 1: Show similar panel — NO poster until user picks correct title
+    # ── Clean up any leftover panel messages from a previous session ──────────
+    for _pkey in ("_sim_panel_id", "_lang_panel_id", "_size_panel_id"):
+        _old_id = context.user_data.pop(_pkey, None)
+        if _old_id:
+            try:
+                await context.bot.delete_message(
+                    update.effective_chat.id, _old_id
+                )
+            except Exception:
+                pass
     await _show_similar_panel(update, context, resolved, sn)
 
 
@@ -1297,6 +1463,24 @@ async def manga_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
+    # ── Session limit check ─────────────────────────────────────────────
+    _uid = update.effective_user.id if update.effective_user else 0
+    _allowed, _used, _limit = _check_session(_uid)
+    if not _allowed:
+        _rh = _session_remaining_secs(_uid) // 3600
+        _rm = (_session_remaining_secs(_uid) % 3600) // 60
+        await update.message.reply_text(
+            _b("⏰ poster limit reached") + f" ({_used}/{_limit} this session)\n"
+            + _bq(_sc(
+                f"Session resets in {_rh}h {_rm}m. "
+                "Clicking Next Image does not count — "
+                "only new poster commands use the limit."
+            )),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    _increment_session(_uid)
+
     q = " ".join(context.args)
     context.user_data.update({
         "media_type":  "MANGA",
@@ -1313,6 +1497,24 @@ async def movie_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _b("usage:") + " /movie &lt;name&gt;", parse_mode=ParseMode.HTML
         )
         return
+    # ── Session limit check ─────────────────────────────────────────────
+    _uid = update.effective_user.id if update.effective_user else 0
+    _allowed, _used, _limit = _check_session(_uid)
+    if not _allowed:
+        _rh = _session_remaining_secs(_uid) // 3600
+        _rm = (_session_remaining_secs(_uid) % 3600) // 60
+        await update.message.reply_text(
+            _b("⏰ poster limit reached") + f" ({_used}/{_limit} this session)\n"
+            + _bq(_sc(
+                f"Session resets in {_rh}h {_rm}m. "
+                "Clicking Next Image does not count — "
+                "only new poster commands use the limit."
+            )),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    _increment_session(_uid)
+
     q = " ".join(context.args)
     context.user_data.update({"media_type": "MOVIE", "anime_query": q, "season_num": None})
     await _show_language_panel(update, context)
@@ -1324,6 +1526,24 @@ async def tvshow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             _b("usage:") + " /tvshow &lt;name&gt;", parse_mode=ParseMode.HTML
         )
         return
+    # ── Session limit check ─────────────────────────────────────────────
+    _uid = update.effective_user.id if update.effective_user else 0
+    _allowed, _used, _limit = _check_session(_uid)
+    if not _allowed:
+        _rh = _session_remaining_secs(_uid) // 3600
+        _rm = (_session_remaining_secs(_uid) % 3600) // 60
+        await update.message.reply_text(
+            _b("⏰ poster limit reached") + f" ({_used}/{_limit} this session)\n"
+            + _bq(_sc(
+                f"Session resets in {_rh}h {_rm}m. "
+                "Clicking Next Image does not count — "
+                "only new poster commands use the limit."
+            )),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    _increment_session(_uid)
+
     q = " ".join(context.args)
     context.user_data.update({"media_type": "TV", "anime_query": q, "season_num": None})
     await _show_language_panel(update, context)
@@ -1336,6 +1556,24 @@ async def net_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             _b("usage:") + " /net &lt;title&gt;", parse_mode=ParseMode.HTML
         )
         return
+    # ── Session limit check ─────────────────────────────────────────────
+    _uid = update.effective_user.id if update.effective_user else 0
+    _allowed, _used, _limit = _check_session(_uid)
+    if not _allowed:
+        _rh = _session_remaining_secs(_uid) // 3600
+        _rm = (_session_remaining_secs(_uid) % 3600) // 60
+        await update.message.reply_text(
+            _b("⏰ poster limit reached") + f" ({_used}/{_limit} this session)\n"
+            + _bq(_sc(
+                f"Session resets in {_rh}h {_rm}m. "
+                "Clicking Next Image does not count — "
+                "only new poster commands use the limit."
+            )),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    _increment_session(_uid)
+
     q    = " ".join(context.args)
     loop = asyncio.get_event_loop()
     context.user_data.update({
