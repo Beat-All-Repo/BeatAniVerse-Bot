@@ -214,9 +214,12 @@ def _register_all_handlers(app: Application) -> None:
         filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
         chatbot_private_handler
     ), group=6)
+    # Chatbot group handler — fires on ALL text in groups (group priority=7)
+    # The handler itself checks DB enable/disable and trigger mode internally.
+    # Using a permissive filter here so plain "hello" / any message works
+    # when chatbot is fully enabled for the group.
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS
-        & (filters.Regex(r'(?i)(hey|hi|hello|bot|@)') | filters.REPLY),
+        filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
         chatbot_group_handler
     ), group=7)
 
