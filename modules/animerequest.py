@@ -489,21 +489,21 @@ async def request_cmd(update: Update, context: CallbackContext):
 
 # ── /myrequests ────────────────────────────────────────────────────────────────
 
-def myrequests_cmd(update: Update, context: CallbackContext):
+async def myrequests_cmd(update: Update, context: CallbackContext):
     message = update.effective_message
     user    = update.effective_user
     chat    = update.effective_chat
 
     rows = _user_requests(user.id, chat.id)
     if not rows:
-        return message.reply_text("You have no requests in this chat yet.")
+        return await message.reply_text("You have no requests in this chat yet.")
 
     lines = ["📋 *Your Requests:*\n"]
     for r in rows:
         icon = "✅" if _fulfilled(r) else "⏳"
         lines.append(f"{icon} `#{_rid(r)}` — [{_title(r)}]({_url(r)})")
 
-    message.reply_text(
+    await message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
@@ -512,18 +512,18 @@ def myrequests_cmd(update: Update, context: CallbackContext):
 
 # ── /requests (admin) ──────────────────────────────────────────────────────────
 
-def requests_list_cmd(update: Update, context: CallbackContext):
+async def requests_list_cmd(update: Update, context: CallbackContext):
     message = update.effective_message
     user    = update.effective_user
     chat    = update.effective_chat
 
-    member = chat.get_member(user.id)
+    member = await chat.get_member(user.id)
     if member.status not in ("administrator", "creator") and user.id not in DRAGONS:
-        return message.reply_text("» Only admins can view the request list!")
+        return await message.reply_text("» Only admins can view the request list!")
 
     pending = _get_pending(chat.id)
     if not pending:
-        return message.reply_text("✨ No pending requests right now!")
+        return await message.reply_text("✨ No pending requests right now!")
 
     lines = [f"📋 *Pending Requests — {chat.title}:*\n"]
     for r in pending:
@@ -533,7 +533,7 @@ def requests_list_cmd(update: Update, context: CallbackContext):
         )
     lines.append("\n`/fulfill <id>` · `/delrequest <id>`")
 
-    message.reply_text(
+    await message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
@@ -542,46 +542,46 @@ def requests_list_cmd(update: Update, context: CallbackContext):
 
 # ── /fulfill (admin) ───────────────────────────────────────────────────────────
 
-def fulfill_cmd(update: Update, context: CallbackContext):
+async def fulfill_cmd(update: Update, context: CallbackContext):
     message = update.effective_message
     user    = update.effective_user
     chat    = update.effective_chat
     args    = context.args
 
-    member = chat.get_member(user.id)
+    member = await chat.get_member(user.id)
     if member.status not in ("administrator", "creator") and user.id not in DRAGONS:
-        return message.reply_text("» Only admins can fulfill requests!")
+        return await message.reply_text("» Only admins can fulfill requests!")
 
     if not args or not args[0].isdigit():
-        return message.reply_text("Usage: `/fulfill <request id>`", parse_mode=ParseMode.HTML)
+        return await message.reply_text("Usage: `/fulfill <request id>`", parse_mode=ParseMode.HTML)
 
     req_id = int(args[0])
     if _fulfill(req_id):
-        message.reply_text(f"✅ Request `#{req_id}` marked as *fulfilled*!", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"✅ Request `#{req_id}` marked as *fulfilled*!", parse_mode=ParseMode.HTML)
     else:
-        message.reply_text(f"❌ Request `#{req_id}` not found.", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"❌ Request `#{req_id}` not found.", parse_mode=ParseMode.HTML)
 
 
 # ── /delrequest (admin) ────────────────────────────────────────────────────────
 
-def delrequest_cmd(update: Update, context: CallbackContext):
+async def delrequest_cmd(update: Update, context: CallbackContext):
     message = update.effective_message
     user    = update.effective_user
     chat    = update.effective_chat
     args    = context.args
 
-    member = chat.get_member(user.id)
+    member = await chat.get_member(user.id)
     if member.status not in ("administrator", "creator") and user.id not in DRAGONS:
-        return message.reply_text("» Only admins can delete requests!")
+        return await message.reply_text("» Only admins can delete requests!")
 
     if not args or not args[0].isdigit():
-        return message.reply_text("Usage: `/delrequest <request id>`", parse_mode=ParseMode.HTML)
+        return await message.reply_text("Usage: `/delrequest <request id>`", parse_mode=ParseMode.HTML)
 
     req_id = int(args[0])
     if _delete(req_id):
-        message.reply_text(f"🗑️ Request `#{req_id}` deleted.", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"🗑️ Request `#{req_id}` deleted.", parse_mode=ParseMode.HTML)
     else:
-        message.reply_text(f"❌ Request `#{req_id}` not found.", parse_mode=ParseMode.HTML)
+        await message.reply_text(f"❌ Request `#{req_id}` not found.", parse_mode=ParseMode.HTML)
 
 
 # ── Register handlers (only when a DB backend is available) ───────────────────
