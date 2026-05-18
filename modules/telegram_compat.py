@@ -327,11 +327,41 @@ class RegexHandler(MessageHandler):
 _V13_KWARGS = {'run_async', 'pass_args', 'pass_update_queue', 'pass_job_queue',
                'pass_user_data', 'pass_chat_data', 'message_updates', 'channel_post_updates',
                'edited_updates', 'allow_edited', 'pass_groups', 'pass_groupdict'}
+import asyncio as _asyncio, functools as _functools, inspect as _inspect
+
+def _ensure_async(callback):
+    """
+    PTB v20 requires async coroutine callbacks.
+    Transparently wraps sync PTB v13 callbacks so they don't crash.
+    """
+    if callback is None or _asyncio.iscoroutinefunction(callback):
+        return callback
+    @_functools.wraps(callback)
+    async def _async_wrapper(update, context, *a, **kw):
+        try:
+            result = callback(update, context, *a, **kw)
+            if _asyncio.iscoroutine(result):
+                return await result
+            return result
+        except Exception as exc:
+            import logging
+            logging.getLogger("telegram_compat").debug(
+                f"[sync→async] {getattr(callback, '__name__', '?')} raised: {exc}"
+            )
+    return _async_wrapper
+
 for _cls in (CommandHandler, MessageHandler, CallbackQueryHandler, InlineQueryHandler):
     _orig = _cls.__init__
     def _patched(self, *a, _orig=_orig, **kw):
         for _k in _V13_KWARGS:
             kw.pop(_k, None)
+        # Auto-wrap sync callbacks for PTB v20 compatibility
+        if a and callable(a[0]):
+            a = (_ensure_async(a[0]),) + a[1:]
+        elif len(a) > 1 and callable(a[1]):
+            a = (a[0], _ensure_async(a[1])) + a[2:]
+        elif 'callback' in kw and callable(kw['callback']):
+            kw['callback'] = _ensure_async(kw['callback'])
         _orig(self, *a, **kw)
     _cls.__init__ = _patched
 
