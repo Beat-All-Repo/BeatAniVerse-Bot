@@ -5,20 +5,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BeatAniVerse Bot — Dual Database Layer
-========================================
-Exports EXACTLY the same API as database_safe.py (NeonDB/PostgreSQL),
-but also initialises MongoDB when MONGO_DB_URI is set.
+BeatAniVerse Bot — Pure MongoDB Database Layer
+================================================
+100% MongoDB — NeonDB / PostgreSQL completely removed.
+Exports the EXACT same public API as the original database_dual.py so
+no other file needs to change.
 
-Priority logic:
-  • PostgreSQL (NeonDB) is used for ALL SQL-based operations when DATABASE_URL is set.
-  • MongoDB is used for:
-      – poster premium plans  (poster_premium collection)
-      – couple data           (couples collection)
-      – chatbot data          (chatbot collection)
-      – any function that explicitly prefers Mongo
-  • If only MongoDB is set (no DATABASE_URL), SQL functions return safe empty/defaults.
-  • Both can be active simultaneously — they are never in conflict.
+All tables that were in PostgreSQL are now MongoDB collections.
+Auto-increment IDs use a _counters collection (atomic $inc).
 
 Credits: BeatAnime | @BeatAnime | @Beat_Anime_Discussion
 """
@@ -26,22 +20,12 @@ Credits: BeatAnime | @BeatAnime | @Beat_Anime_Discussion
 import logging
 import json
 import secrets
+import re as _re
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  PostgreSQL / NeonDB layer (original database_safe code, intact)
-# ──────────────────────────────────────────────────────────────────────────────
-
-try:
-    import psycopg2
-    from psycopg2 import pool as pg_pool
-    PSYCOPG2_OK = True
-except ImportError:
-    PSYCOPG2_OK = False
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  MongoDB layer
@@ -54,68 +38,30 @@ try:
 except ImportError:
     PYMONGO_OK = False
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Global handles
-# ──────────────────────────────────────────────────────────────────────────────
-
-class _PG:
-    pool: Optional[Any] = None
 
 class _MG:
     db: Optional[Any] = None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  INIT
 # ──────────────────────────────────────────────────────────────────────────────
 
 def init_db(database_url: str = "", mongo_uri: str = "") -> None:
-    """Initialise both databases. At least one must be supplied."""
-    if database_url and PSYCOPG2_OK:
-        _init_pg(database_url)
-    elif database_url:
-        logger.error("psycopg2 not installed – skipping PostgreSQL init")
-
-    if mongo_uri and PYMONGO_OK:
-        _init_mongo(mongo_uri)
-    elif mongo_uri:
-        logger.error("pymongo not installed – skipping MongoDB init")
-
-    if _PG.pool is None and _MG.db is None:
+    """Initialise MongoDB.  database_url is accepted but silently ignored."""
+    if not mongo_uri:
         raise RuntimeError(
-            "FATAL: No database could be initialised. "
-            "Check DATABASE_URL / MONGO_DB_URI and installed packages."
+            "FATAL: MONGO_DB_URI is not set. MongoDB is the only supported database."
         )
-
-
-def _init_pg(url: str) -> None:
-    import time as _t
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    for attempt in range(5):
-        try:
-            _PG.pool = pg_pool.SimpleConnectionPool(
-                1, 5, url,
-                sslmode="require",
-                connect_timeout=10,
-                keepalives=1, keepalives_idle=30,
-                keepalives_interval=10, keepalives_count=5,
-            )
-            _migrate_pg()
-            logger.info("✅ [NeonDB] PostgreSQL connected and migrated")
-            return
-        except Exception as exc:
-            if attempt < 4:
-                logger.warning(f"[NeonDB] attempt {attempt+1}/5 failed: {exc}. Retrying…")
-                _t.sleep(3)
-            else:
-                logger.error(f"[NeonDB] all attempts failed: {exc}")
+    if not PYMONGO_OK:
+        raise RuntimeError("pymongo is not installed. Run: pip install pymongo")
+    _init_mongo(mongo_uri)
 
 
 def _init_mongo(uri: str) -> None:
     try:
         client = MongoClient(uri, serverSelectionTimeoutMS=8000)
         client.server_info()          # force connection
-        # NOTE: MongoDB Database objects raise on bool() — use explicit None check
         try:
             _default = client.get_default_database()
         except Exception:
@@ -125,335 +71,29 @@ def _init_mongo(uri: str) -> None:
         logger.info("✅ [MongoDB] Connected and indexed")
     except Exception as exc:
         logger.error(f"[MongoDB] init failed: {exc}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  PostgreSQL helpers
-# ──────────────────────────────────────────────────────────────────────────────
-
-@contextmanager
-def _pg():
-    """Yield a psycopg2 connection from the pool, or yield None if unavailable."""
-    if not _PG.pool:
-        yield None
-        return
-    conn = None
-    try:
-        conn = _PG.pool.getconn()
-        yield conn
-        conn.commit()
-    except Exception as exc:
-        if conn:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        logger.error(f"[PG] error: {exc}")
         raise
-    finally:
-        if conn and _PG.pool:
-            _PG.pool.putconn(conn)
-
-
-def _pg_exec(sql: str, params=()) -> Optional[Any]:
-    """Execute SQL, return cursor.fetchone() or None."""
-    with _pg() as conn:
-        if conn is None:
-            return None
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        try:
-            row = cur.fetchone()
-            # Guard: return None if empty tuple (some drivers return () instead of None)
-            return row if row else None
-        except Exception:
-            return None
-
-
-def _pg_exec_many(sql: str, params=()) -> Optional[list]:
-    with _pg() as conn:
-        if conn is None:
-            return None
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        try:
-            return cur.fetchall()
-        except Exception:
-            return []
-
-
-# Alias for readable multi-row queries
-def _pg_exec_all(sql: str, params=()) -> Optional[list]:
-    """Execute SQL, return cursor.fetchall() or empty list."""
-    return _pg_exec_many(sql, params) or []
-
-
-def _pg_run(sql: str, params=()) -> bool:
-    """Execute SQL with no return value. Returns True on success."""
-    with _pg() as conn:
-        if conn is None:
-            return False
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  PostgreSQL migration — creates all required tables
+#  Internal helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _migrate_pg() -> None:
-    with _pg() as conn:
-        if conn is None:
-            return
-        cur = conn.cursor()
+def _db() -> Any:
+    """Return the MongoDB database handle (raises if not initialised)."""
+    if _MG.db is None:
+        raise RuntimeError("MongoDB not initialised. Call init_db() first.")
+    return _MG.db
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                joined_date TIMESTAMP DEFAULT NOW(),
-                is_banned BOOLEAN DEFAULT FALSE
-            )""")
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS force_sub_channels (
-                channel_username TEXT PRIMARY KEY,
-                channel_title TEXT,
-                is_active BOOLEAN DEFAULT TRUE,
-                join_by_request BOOLEAN DEFAULT FALSE,
-                invite_link TEXT,
-                channel_id BIGINT
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fsub_join_requests (
-                user_id          BIGINT NOT NULL,
-                channel_username TEXT   NOT NULL,
-                channel_id       BIGINT,
-                requested_at     TIMESTAMP DEFAULT NOW(),
-                PRIMARY KEY (user_id, channel_username)
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS generated_links (
-                link_id TEXT PRIMARY KEY,
-                channel_username TEXT NOT NULL,
-                user_id BIGINT,
-                created_time TIMESTAMP DEFAULT NOW(),
-                never_expires BOOLEAN DEFAULT TRUE,
-                channel_title TEXT,
-                source_bot_username TEXT
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS clone_bots (
-                id SERIAL PRIMARY KEY,
-                bot_token TEXT UNIQUE NOT NULL,
-                bot_username TEXT,
-                is_active BOOLEAN DEFAULT TRUE,
-                added_date TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS category_settings (
-                category TEXT PRIMARY KEY,
-                template_name TEXT,
-                branding TEXT,
-                buttons TEXT,
-                caption_template TEXT,
-                thumbnail_url TEXT,
-                font_style TEXT DEFAULT 'normal',
-                logo_file_id TEXT,
-                logo_position TEXT DEFAULT 'bottom',
-                watermark_text TEXT,
-                watermark_position TEXT DEFAULT 'center'
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS auto_forward_connections (
-                id SERIAL PRIMARY KEY,
-                source_chat_id BIGINT NOT NULL,
-                source_chat_username TEXT,
-                target_chat_id BIGINT NOT NULL,
-                active BOOLEAN DEFAULT TRUE,
-                delay_seconds INT DEFAULT 0,
-                protect_content BOOLEAN DEFAULT FALSE,
-                silent BOOLEAN DEFAULT FALSE,
-                keep_tag BOOLEAN DEFAULT FALSE,
-                pin_message BOOLEAN DEFAULT FALSE,
-                delete_source BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS auto_forward_filters (
-                id SERIAL PRIMARY KEY,
-                connection_id INT REFERENCES auto_forward_connections(id) ON DELETE CASCADE,
-                allowed_media TEXT[] DEFAULT '{}',
-                blacklist TEXT[] DEFAULT '{}',
-                whitelist TEXT[] DEFAULT '{}',
-                blacklist_words TEXT DEFAULT '',
-                whitelist_words TEXT DEFAULT '',
-                caption_override TEXT DEFAULT '',
-                enable_in_dm BOOLEAN DEFAULT TRUE,
-                enable_in_group BOOLEAN DEFAULT TRUE
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS auto_forward_replacements (
-                id SERIAL PRIMARY KEY,
-                connection_id INT REFERENCES auto_forward_connections(id) ON DELETE CASCADE,
-                old_pattern TEXT NOT NULL,
-                new_pattern TEXT NOT NULL
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS auto_forward_state (
-                connection_id INT PRIMARY KEY REFERENCES auto_forward_connections(id) ON DELETE CASCADE,
-                last_message_id BIGINT,
-                updated_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS manga_auto_update (
-                id SERIAL PRIMARY KEY,
-                manga_title TEXT NOT NULL,
-                manga_id TEXT,
-                last_chapter TEXT,
-                target_chat_id BIGINT,
-                watermark BOOLEAN DEFAULT FALSE,
-                combine_pdf BOOLEAN DEFAULT FALSE,
-                active BOOLEAN DEFAULT TRUE,
-                last_checked TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS scheduled_broadcasts (
-                id SERIAL PRIMARY KEY,
-                admin_id BIGINT NOT NULL,
-                message_text TEXT,
-                media_file_id TEXT,
-                media_type TEXT,
-                execute_at TIMESTAMP NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS broadcast_history (
-                id SERIAL PRIMARY KEY,
-                admin_id BIGINT NOT NULL,
-                mode TEXT,
-                total_users INT,
-                success INT DEFAULT 0,
-                blocked INT DEFAULT 0,
-                deleted INT DEFAULT 0,
-                failed INT DEFAULT 0,
-                message_text TEXT,
-                started_at TIMESTAMP DEFAULT NOW(),
-                completed_at TIMESTAMP
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS feature_flags (
-                feature_name TEXT,
-                entity_id BIGINT,
-                entity_type TEXT,
-                enabled BOOLEAN DEFAULT TRUE,
-                PRIMARY KEY (feature_name, entity_id, entity_type)
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS bot_progress (
-                id INTEGER PRIMARY KEY,
-                target_chat_id BIGINT,
-                season INTEGER DEFAULT 1,
-                episode INTEGER DEFAULT 1,
-                total_episode INTEGER DEFAULT 1,
-                video_count INTEGER DEFAULT 0,
-                selected_qualities TEXT DEFAULT '480p,720p,1080p',
-                base_caption TEXT,
-                auto_caption_enabled BOOLEAN DEFAULT TRUE
-            )""")
-        cur.execute("INSERT INTO bot_progress (id, base_caption) VALUES (1, '') ON CONFLICT (id) DO NOTHING")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS connected_groups (
-                group_id BIGINT PRIMARY KEY,
-                group_username TEXT,
-                group_title TEXT,
-                connected_by BIGINT,
-                connected_at TIMESTAMP DEFAULT NOW(),
-                active BOOLEAN DEFAULT TRUE
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS posts_cache (
-                id SERIAL PRIMARY KEY,
-                category TEXT,
-                title TEXT,
-                anilist_id INT,
-                media_data JSONB,
-                created_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS anime_channel_links (
-                id SERIAL PRIMARY KEY,
-                anime_title TEXT NOT NULL,
-                channel_id BIGINT NOT NULL,
-                channel_title TEXT,
-                link_id TEXT,
-                added_by BIGINT,
-                created_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(anime_title, channel_id)
-            )""")
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS filter_poster_cache (
-                id SERIAL PRIMARY KEY,
-                cache_key TEXT UNIQUE NOT NULL,
-                anime_title TEXT NOT NULL,
-                template TEXT DEFAULT 'ani',
-                file_id TEXT NOT NULL,
-                channel_id BIGINT DEFAULT 0,
-                channel_msg_id BIGINT DEFAULT 0,
-                caption TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT NOW()
-            )""")
-
-        # Idempotent column adds
-        for ddl in [
-            "DO $$ BEGIN ALTER TABLE generated_links ADD COLUMN channel_title TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE generated_links ADD COLUMN source_bot_username TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN join_by_request BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN invite_link TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE force_sub_channels ADD COLUMN channel_id BIGINT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE users ADD COLUMN is_banned BOOLEAN DEFAULT FALSE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE bot_progress ADD COLUMN anime_name TEXT DEFAULT 'Anime Name'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN blacklist_words TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN whitelist_words TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN caption_override TEXT DEFAULT ''; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN enable_in_dm BOOLEAN DEFAULT TRUE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN enable_in_group BOOLEAN DEFAULT TRUE; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-            "DO $$ BEGIN ALTER TABLE auto_forward_filters ADD COLUMN allowed_media TEXT[] DEFAULT '{}'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;",
-        ]:
-            try:
-                cur.execute(ddl)
-            except Exception:
-                pass
-
-    logger.info("✅ [NeonDB] Migration complete")
+def _next_id(collection_name: str) -> int:
+    """Atomic auto-increment counter stored in _counters collection."""
+    result = _db()["_counters"].find_one_and_update(
+        {"_id": collection_name},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return result["seq"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -461,18 +101,115 @@ def _migrate_pg() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _migrate_mongo() -> None:
-    db = _MG.db
-    if db is None:
-        return
+    db = _db()
     try:
+        # Users
+        db.users.create_index("user_id", unique=True)
+        db.users.create_index("username")
+
+        # Force sub
+        db.force_sub_channels.create_index("channel_username", unique=True)
+        db.force_sub_channels.create_index("channel_id")
+        db.rqst_fsub_Channel_data.create_index("_id")
+
+        # Generated links
+        db.generated_links.create_index("link_id", unique=True)
+        db.generated_links.create_index("source_bot_username")
+        db.generated_links.create_index("created_time")
+
+        # Settings
+        db.bot_settings.create_index("key", unique=True)
+
+        # Clone bots
+        db.clone_bots.create_index("bot_token", unique=True)
+        db.clone_bots.create_index("bot_username")
+
+        # Category settings
+        db.category_settings.create_index("category", unique=True)
+
+        # Auto-forward
+        db.auto_forward_connections.create_index("id", unique=True)
+        db.auto_forward_filters.create_index("connection_id")
+        db.auto_forward_replacements.create_index("connection_id")
+        db.auto_forward_state.create_index("connection_id", unique=True)
+
+        # Manga auto update
+        db.manga_auto_update.create_index("id", unique=True)
+
+        # Scheduled broadcasts
+        db.scheduled_broadcasts.create_index("id", unique=True)
+        db.scheduled_broadcasts.create_index([("status", ASCENDING), ("execute_at", ASCENDING)])
+
+        # Broadcast history
+        db.broadcast_history.create_index("id", unique=True)
+
+        # Feature flags
+        db.feature_flags.create_index(
+            [("feature_name", ASCENDING), ("entity_id", ASCENDING), ("entity_type", ASCENDING)],
+            unique=True,
+        )
+
+        # Bot progress
+        db.bot_progress.create_index("id", unique=True)
+
+        # Connected groups
+        db.connected_groups.create_index("group_id", unique=True)
+
+        # Posts cache
+        db.posts_cache.create_index("anilist_id")
+
+        # Anime channel links
+        db.anime_channel_links.create_index(
+            [("anime_title", ASCENDING), ("channel_id", ASCENDING)], unique=True
+        )
+
+        # Filter poster cache
+        db.filter_poster_cache.create_index("cache_key", unique=True)
+
+        # Channel welcome
+        db.channel_welcome_settings.create_index("channel_id", unique=True)
+
+        # Search analytics
+        db.search_analytics.create_index(
+            [("anime_title", ASCENDING), ("user_id", ASCENDING)], unique=True
+        )
+
+        # Pending deletes
+        db.pending_message_deletes.create_index("id", unique=True)
+        db.pending_message_deletes.create_index("delete_at")
+
+        # Poster premium / usage / couples / chatbot (already exist)
         db.poster_premium.create_index("user_id", unique=True)
-        db.poster_usage.create_index([("user_id", ASCENDING), ("date", ASCENDING)], unique=True)
+        db.poster_usage.create_index(
+            [("user_id", ASCENDING), ("date", ASCENDING)], unique=True
+        )
         db.couples.create_index("user_id")
         db.chatbot_data.create_index("chat_id")
-        db.mongo_users.create_index("user_id", unique=True)
+
+        # FSub join requests (legacy: keep rqst_fsub_Channel_data too)
+        db.fsub_join_requests.create_index(
+            [("channel_id", ASCENDING), ("user_id", ASCENDING)], unique=True
+        )
+
         logger.info("✅ [MongoDB] Indexes created")
     except Exception as exc:
-        logger.warning(f"[MongoDB] index creation: {exc}")
+        logger.warning(f"[MongoDB] index creation warning: {exc}")
+
+    # Ensure bot_progress singleton exists
+    try:
+        db.bot_progress.update_one(
+            {"id": 1},
+            {"$setOnInsert": {
+                "id": 1, "target_chat_id": None, "season": 1, "episode": 1,
+                "total_episode": 1, "video_count": 0,
+                "selected_qualities": "480p,720p,1080p",
+                "base_caption": "", "auto_caption_enabled": True,
+                "anime_name": "Anime Name",
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -480,32 +217,22 @@ def _migrate_mongo() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_setting(key: str, default=None) -> Optional[str]:
-    row = _pg_exec("SELECT value FROM bot_settings WHERE key = %s", (key,))
-    if row:
-        return row[0]
-    # Mongo fallback
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.bot_settings.find_one({"key": key})
-            if doc:
-                return doc.get("value", default)
-        except Exception:
-            pass
+    try:
+        doc = _db().bot_settings.find_one({"key": key})
+        if doc:
+            return doc.get("value", default)
+    except Exception:
+        pass
     return default
 
 
 def set_setting(key: str, value: str) -> None:
-    ok = _pg_run("""
-        INSERT INTO bot_settings (key, value) VALUES (%s, %s)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-    """, (key, value))
-    if _MG.db is not None:
-        try:
-            _MG.db.bot_settings.update_one(
-                {"key": key}, {"$set": {"key": key, "value": value}}, upsert=True
-            )
-        except Exception:
-            pass
+    try:
+        _db().bot_settings.update_one(
+            {"key": key}, {"$set": {"key": key, "value": value}}, upsert=True
+        )
+    except Exception as exc:
+        logger.error(f"set_setting({key}): {exc}")
 
 
 def is_maintenance_mode() -> bool:
@@ -525,102 +252,65 @@ def toggle_maintenance_mode() -> bool:
 def add_user(user_id: int, username: Optional[str],
              first_name: Optional[str], last_name: Optional[str]) -> None:
     clean = (username or "").lstrip("@") or None
-    _pg_run("""
-        INSERT INTO users (user_id, username, first_name, last_name)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (user_id) DO UPDATE
-            SET username   = EXCLUDED.username,
-                first_name = EXCLUDED.first_name,
-                last_name  = EXCLUDED.last_name
-    """, (user_id, clean, first_name, last_name))
-    if _MG.db is not None:
-        try:
-            _MG.db.mongo_users.update_one(
-                {"user_id": user_id},
-                {"$set": {"user_id": user_id, "username": clean,
-                          "first_name": first_name, "last_name": last_name}},
-                upsert=True,
-            )
-        except Exception:
-            pass
+    try:
+        _db().users.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "username": clean,
+                      "first_name": first_name, "last_name": last_name},
+             "$setOnInsert": {"joined_date": datetime.utcnow(), "is_banned": False}},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.error(f"add_user: {exc}")
 
 
 def get_user_count() -> int:
-    row = _pg_exec("SELECT COUNT(*) FROM users")
-    if row:
-        return row[0]
-    if _MG.db is not None:
-        try:
-            return _MG.db.mongo_users.count_documents({})
-        except Exception:
-            pass
-    return 0
+    try:
+        return _db().users.count_documents({})
+    except Exception:
+        return 0
 
 
 def get_blocked_users_count() -> int:
-    row = _pg_exec("SELECT COUNT(*) FROM users WHERE is_banned = TRUE")
-    return row[0] if row else 0
+    try:
+        return _db().users.count_documents({"is_banned": True})
+    except Exception:
+        return 0
 
 
 def get_all_users(limit=None, offset=0) -> list:
-    if limit is None:
-        rows = _pg_exec_many("""
-            SELECT user_id, username, first_name, last_name, joined_date, is_banned
-            FROM users ORDER BY joined_date DESC
-        """)
-    else:
-        rows = _pg_exec_many("""
-            SELECT user_id, username, first_name, last_name, joined_date, is_banned
-            FROM users ORDER BY joined_date DESC LIMIT %s OFFSET %s
-        """, (limit, offset))
-    if rows is not None:
-        return rows
-    # Mongo fallback
-    if _MG.db is not None:
-        try:
-            cursor = _MG.db.mongo_users.find({}, {"_id": 0}).skip(offset)
-            if limit:
-                cursor = cursor.limit(limit)
-            return [
-                (d.get("user_id"), d.get("username"), d.get("first_name"),
-                 d.get("last_name"), d.get("joined_date"), d.get("is_banned", False))
-                for d in cursor
-            ]
-        except Exception:
-            pass
-    return []
+    try:
+        cursor = _db().users.find({}).sort("joined_date", DESCENDING).skip(offset)
+        if limit:
+            cursor = cursor.limit(limit)
+        return [
+            (d.get("user_id"), d.get("username"), d.get("first_name"),
+             d.get("last_name"), d.get("joined_date"), d.get("is_banned", False))
+            for d in cursor
+        ]
+    except Exception:
+        return []
 
 
 def get_user_info_by_id(user_id: int) -> Optional[tuple]:
-    row = _pg_exec("""
-        SELECT user_id, username, first_name, last_name, joined_date, is_banned
-        FROM users WHERE user_id = %s
-    """, (user_id,))
-    if row:
-        return row
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.mongo_users.find_one({"user_id": user_id})
-            if doc:
-                return (doc.get("user_id"), doc.get("username"), doc.get("first_name"),
-                        doc.get("last_name"), doc.get("joined_date"), doc.get("is_banned", False))
-        except Exception:
-            pass
+    try:
+        doc = _db().users.find_one({"user_id": user_id})
+        if doc:
+            return (doc.get("user_id"), doc.get("username"), doc.get("first_name"),
+                    doc.get("last_name"), doc.get("joined_date"), doc.get("is_banned", False))
+    except Exception:
+        pass
     return None
 
 
 def get_user_id_by_username(username: str) -> Optional[int]:
     clean = username.lstrip("@").lower()
-    row = _pg_exec("SELECT user_id FROM users WHERE LOWER(username) = %s", (clean,))
-    if row:
-        return row[0]
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.mongo_users.find_one({"username": {"$regex": f"^{clean}$", "$options": "i"}})
-            if doc:
-                return doc.get("user_id")
-        except Exception:
-            pass
+    try:
+        doc = _db().users.find_one({"username": {"$regex": f"^{clean}$", "$options": "i"}})
+        if doc:
+            return doc.get("user_id")
+    except Exception:
+        pass
     return None
 
 
@@ -634,46 +324,33 @@ def resolve_target_user_id(target_arg: str) -> Optional[int]:
 
 
 def is_existing_user(user_id: int) -> bool:
-    row = _pg_exec("SELECT 1 FROM users WHERE user_id = %s", (user_id,))
-    if row:
-        return True
-    if _MG.db is not None:
-        try:
-            return _MG.db.mongo_users.find_one({"user_id": user_id}) is not None
-        except Exception:
-            pass
-    return False
+    try:
+        return _db().users.find_one({"user_id": user_id}) is not None
+    except Exception:
+        return False
 
 
 def ban_user(user_id: int) -> None:
-    _pg_run("UPDATE users SET is_banned = TRUE WHERE user_id = %s", (user_id,))
-    if _MG.db is not None:
-        try:
-            _MG.db.mongo_users.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
-        except Exception:
-            pass
+    try:
+        _db().users.update_one({"user_id": user_id}, {"$set": {"is_banned": True}})
+    except Exception:
+        pass
 
 
 def unban_user(user_id: int) -> None:
-    _pg_run("UPDATE users SET is_banned = FALSE WHERE user_id = %s", (user_id,))
-    if _MG.db is not None:
-        try:
-            _MG.db.mongo_users.update_one({"user_id": user_id}, {"$set": {"is_banned": False}})
-        except Exception:
-            pass
+    try:
+        _db().users.update_one({"user_id": user_id}, {"$set": {"is_banned": False}})
+    except Exception:
+        pass
 
 
 def is_user_banned(user_id: int) -> bool:
-    row = _pg_exec("SELECT is_banned FROM users WHERE user_id = %s", (user_id,))
-    if row:
-        return bool(row[0])
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.mongo_users.find_one({"user_id": user_id})
-            if doc:
-                return bool(doc.get("is_banned", False))
-        except Exception:
-            pass
+    try:
+        doc = _db().users.find_one({"user_id": user_id})
+        if doc:
+            return bool(doc.get("is_banned", False))
+    except Exception:
+        pass
     return False
 
 
@@ -685,131 +362,80 @@ def add_force_sub_channel(channel_username: str, channel_title: str,
                            join_by_request: bool = False,
                            invite_link: str = None,
                            channel_id: int = None) -> bool:
-    """
-    channel_username : @handle or str(numeric_id)
-    channel_id       : numeric Telegram chat ID (BIGINT) — used for reliable
-                       lookup when auto-approving join requests by chat.id
-    """
-    ok = _pg_run("""
-        INSERT INTO force_sub_channels
-            (channel_username, channel_title, is_active, join_by_request, invite_link, channel_id)
-        VALUES (%s, %s, TRUE, %s, %s, %s)
-        ON CONFLICT (channel_username) DO UPDATE
-            SET channel_title    = EXCLUDED.channel_title,
-                is_active        = TRUE,
-                join_by_request  = EXCLUDED.join_by_request,
-                invite_link      = COALESCE(EXCLUDED.invite_link, force_sub_channels.invite_link),
-                channel_id       = COALESCE(EXCLUDED.channel_id,  force_sub_channels.channel_id)
-    """, (channel_username, channel_title, join_by_request, invite_link, channel_id))
-    if _MG.db is not None:
-        try:
-            doc = {"channel_username": channel_username, "channel_title": channel_title,
-                   "is_active": True, "join_by_request": join_by_request}
-            if invite_link:
-                doc["invite_link"] = invite_link
-            if channel_id:
-                doc["channel_id"] = channel_id
-            _MG.db.force_sub_channels.update_one(
-                {"channel_username": channel_username},
-                {"$set": doc},
-                upsert=True,
-            )
-        except Exception:
-            pass
-    return ok
+    try:
+        doc = {"channel_username": channel_username, "channel_title": channel_title,
+               "is_active": True, "join_by_request": join_by_request}
+        if invite_link:
+            doc["invite_link"] = invite_link
+        if channel_id:
+            doc["channel_id"] = channel_id
+        _db().force_sub_channels.update_one(
+            {"channel_username": channel_username},
+            {"$set": doc},
+            upsert=True,
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"add_force_sub_channel: {exc}")
+        return False
 
 
 def update_force_sub_invite_link(channel_username: str, invite_link: str) -> bool:
-    """Update the stored invite_link for an existing force-sub channel."""
-    ok = _pg_run(
-        "UPDATE force_sub_channels SET invite_link = %s WHERE channel_username = %s",
-        (invite_link, channel_username),
-    )
-    if _MG.db is not None:
-        try:
-            _MG.db.force_sub_channels.update_one(
-                {"channel_username": channel_username},
-                {"$set": {"invite_link": invite_link}},
-            )
-        except Exception:
-            pass
-    return ok
+    try:
+        _db().force_sub_channels.update_one(
+            {"channel_username": channel_username},
+            {"$set": {"invite_link": invite_link}},
+        )
+        return True
+    except Exception:
+        return False
 
-# ── FSub join-request tracking (mirrors Advance-File-Share-bot logic) ─────────
-# Reference: request_forcesub_channel collection keyed by numeric channel_id
-# Stores set of user_ids who have sent a join request to each JBR channel.
-# On chat_join_request  → add user_id to channel's set
-# On chat_member_updated (user leaves) → remove user_id from channel's set
-# On is_sub check        → if status=="left" and mode=="jbr" → check this table
 
 def record_fsub_join_request(channel_id: int, user_id: int) -> bool:
-    """
-    Add *user_id* to the join-request whitelist for *channel_id*.
-    Idempotent — safe to call multiple times.
-    """
-    ok = _pg_run("""
-        INSERT INTO fsub_join_requests (user_id, channel_username, channel_id)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (user_id, channel_username) DO UPDATE
-            SET requested_at = NOW(),
-                channel_id   = COALESCE(EXCLUDED.channel_id,
-                                        fsub_join_requests.channel_id)
-    """, (user_id, str(channel_id), channel_id))
-    if _MG.db is not None:
-        try:
-            _MG.db.rqst_fsub_Channel_data.update_one(
-                {"_id": int(channel_id)},
-                {"$addToSet": {"user_ids": int(user_id)}},
-                upsert=True,
-            )
-        except Exception:
-            pass
-    return ok
+    try:
+        _db().rqst_fsub_Channel_data.update_one(
+            {"_id": int(channel_id)},
+            {"$addToSet": {"user_ids": int(user_id)}},
+            upsert=True,
+        )
+        # Also keep flat collection for easier queries
+        _db().fsub_join_requests.update_one(
+            {"channel_id": int(channel_id), "user_id": int(user_id)},
+            {"$set": {"channel_id": int(channel_id), "user_id": int(user_id),
+                      "channel_username": str(channel_id),
+                      "requested_at": datetime.utcnow()}},
+            upsert=True,
+        )
+        return True
+    except Exception as exc:
+        logger.error(f"record_fsub_join_request: {exc}")
+        return False
 
 
 def has_fsub_join_request(channel_id: int, user_id: int) -> bool:
-    """
-    Return True if *user_id* is in the whitelist for *channel_id*.
-    Primary lookup is by numeric channel_id — fast and unambiguous.
-    """
-    row = _pg_exec(
-        "SELECT 1 FROM fsub_join_requests WHERE channel_id = %s AND user_id = %s LIMIT 1",
-        (channel_id, user_id),
-    )
-    if row:
-        return True
-
-    if _MG.db is not None:
-        try:
-            found = _MG.db.rqst_fsub_Channel_data.find_one(
-                {"_id": int(channel_id), "user_ids": int(user_id)}
-            )
-            return bool(found)
-        except Exception:
-            pass
+    try:
+        found = _db().rqst_fsub_Channel_data.find_one(
+            {"_id": int(channel_id), "user_ids": int(user_id)}
+        )
+        return bool(found)
+    except Exception:
+        pass
     return False
 
 
 def remove_fsub_join_request(channel_id: int, user_id: int) -> None:
-    """
-    Remove *user_id* from the whitelist for *channel_id*.
-    Called when user leaves the channel (chat_member_updated).
-    """
-    _pg_run(
-        "DELETE FROM fsub_join_requests WHERE channel_id = %s AND user_id = %s",
-        (channel_id, user_id),
-    )
-    if _MG.db is not None:
-        try:
-            _MG.db.rqst_fsub_Channel_data.update_one(
-                {"_id": int(channel_id)},
-                {"$pull": {"user_ids": int(user_id)}},
-            )
-        except Exception:
-            pass
+    try:
+        _db().rqst_fsub_Channel_data.update_one(
+            {"_id": int(channel_id)},
+            {"$pull": {"user_ids": int(user_id)}},
+        )
+        _db().fsub_join_requests.delete_one(
+            {"channel_id": int(channel_id), "user_id": int(user_id)}
+        )
+    except Exception:
+        pass
 
 
-# keep old name as alias so existing callers don't break
 def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
     """Alias kept for backwards compatibility."""
     try:
@@ -820,153 +446,72 @@ def clear_fsub_join_request(user_id: int, channel_username: str) -> None:
 
 
 def is_jbr_fsub_channel(channel_id: int) -> bool:
-    """
-    Return True if *channel_id* is in the force-sub list with join_by_request=TRUE.
-    """
-    row = _pg_exec("""
-        SELECT 1 FROM force_sub_channels
-        WHERE is_active = TRUE AND join_by_request = TRUE
-          AND (channel_id = %s OR channel_username = %s)
-        LIMIT 1
-    """, (channel_id, str(channel_id)))
-    if row:
-        return True
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.force_sub_channels.find_one(
-                {"is_active": True, "join_by_request": True,
-                 "$or": [{"channel_id": int(channel_id)},
-                         {"channel_username": str(channel_id)}]}
-            )
-            return bool(doc)
-        except Exception:
-            pass
+    try:
+        doc = _db().force_sub_channels.find_one(
+            {"is_active": True, "join_by_request": True,
+             "$or": [{"channel_id": int(channel_id)},
+                     {"channel_username": str(channel_id)}]}
+        )
+        return bool(doc)
+    except Exception:
+        pass
     return False
 
 
 def get_all_fsub_whitelisted_users(channel_id: int) -> list:
-    """Return all user_ids whitelisted for *channel_id* (used by startup cleanup)."""
-    rows = _pg_exec_many(
-        "SELECT user_id FROM fsub_join_requests WHERE channel_id = %s",
-        (channel_id,),
-    )
-    if rows:
-        return [r[0] for r in rows]
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.rqst_fsub_Channel_data.find_one({"_id": int(channel_id)})
-            return list(doc.get("user_ids", [])) if doc else []
-        except Exception:
-            pass
-    return []
+    try:
+        doc = _db().rqst_fsub_Channel_data.find_one({"_id": int(channel_id)})
+        return list(doc.get("user_ids", [])) if doc else []
+    except Exception:
+        return []
 
 
 def get_all_force_sub_channels(return_usernames_only: bool = False) -> list:
-    """
-    Return list of force-sub channels.
-    If return_usernames_only=True  → list of str (username/id only).
-    Otherwise                      → list of 4-tuples (username, title, jbr, invite_link).
-    """
-    if return_usernames_only:
-        rows = _pg_exec_many(
-            "SELECT channel_username FROM force_sub_channels WHERE is_active = TRUE ORDER BY channel_title"
-        )
-        if rows is not None:
-            return [r[0] for r in rows]
-    else:
-        rows = _pg_exec_many("""
-            SELECT channel_username, channel_title,
-                   COALESCE(join_by_request, FALSE),
-                   COALESCE(invite_link, ''),
-                   channel_id
-            FROM force_sub_channels WHERE is_active = TRUE ORDER BY channel_title
-        """)
-        if rows is not None:
-            # 5-tuple: (uname, title, jbr, invite_link, channel_id)
-            return [tuple(r) for r in rows]
-
-    # Mongo fallback
-    if _MG.db is not None:
-        try:
-            docs = list(_MG.db.force_sub_channels.find({"is_active": True}))
-            if return_usernames_only:
-                return [d.get("channel_username") for d in docs]
-            return [
-                (
-                    d.get("channel_username", ""),
-                    d.get("channel_title", ""),
-                    bool(d.get("join_by_request", False)),
-                    d.get("invite_link", "") or "",
-                    d.get("channel_id"),
-                )
-                for d in docs
-            ]
-        except Exception:
-            pass
-    return []
+    try:
+        docs = list(_db().force_sub_channels.find({"is_active": True}))
+        if return_usernames_only:
+            return [d.get("channel_username") for d in docs]
+        return [
+            (
+                d.get("channel_username", ""),
+                d.get("channel_title", ""),
+                bool(d.get("join_by_request", False)),
+                d.get("invite_link", "") or "",
+                d.get("channel_id"),
+            )
+            for d in docs
+        ]
+    except Exception:
+        return []
 
 
 def get_force_sub_channel_info(channel_username: str) -> Optional[tuple]:
-    """
-    Lookup a force-sub channel entry.
-    Accepts @username, bare username, or str(numeric_chat_id).
-    Returns 3-tuple (username, title, jbr) or None.
-    """
-    # Try exact username match first
-    row = _pg_exec("""
-        SELECT channel_username, channel_title, COALESCE(join_by_request, FALSE)
-        FROM force_sub_channels WHERE channel_username = %s AND is_active = TRUE
-    """, (channel_username,))
-    if row:
-        return row
-
-    # Try matching by stored numeric channel_id (handles @username stored channels
-    # when looked up by req.chat.id which is always a numeric int)
     try:
-        numeric_id = int(channel_username)
-        row = _pg_exec("""
-            SELECT channel_username, channel_title, COALESCE(join_by_request, FALSE)
-            FROM force_sub_channels
-            WHERE channel_id = %s AND is_active = TRUE
-        """, (numeric_id,))
-        if row:
-            return row
-    except (ValueError, TypeError):
+        doc = _db().force_sub_channels.find_one(
+            {"channel_username": channel_username, "is_active": True}
+        )
+        if not doc:
+            try:
+                doc = _db().force_sub_channels.find_one(
+                    {"channel_id": int(channel_username), "is_active": True}
+                )
+            except (ValueError, TypeError):
+                pass
+        if doc:
+            return (doc.get("channel_username"), doc.get("channel_title"),
+                    bool(doc.get("join_by_request", False)))
+    except Exception:
         pass
-
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.force_sub_channels.find_one(
-                {"channel_username": channel_username, "is_active": True}
-            )
-            if not doc:
-                # Try numeric ID in mongo too
-                try:
-                    doc = _MG.db.force_sub_channels.find_one(
-                        {"channel_id": int(channel_username), "is_active": True}
-                    )
-                except (ValueError, TypeError):
-                    pass
-            if doc:
-                return (doc.get("channel_username"), doc.get("channel_title"),
-                        bool(doc.get("join_by_request", False)))
-        except Exception:
-            pass
     return None
 
 
 def delete_force_sub_channel(channel_username: str) -> None:
-    _pg_run(
-        "UPDATE force_sub_channels SET is_active = FALSE WHERE channel_username = %s",
-        (channel_username,)
-    )
-    if _MG.db is not None:
-        try:
-            _MG.db.force_sub_channels.update_one(
-                {"channel_username": channel_username}, {"$set": {"is_active": False}}
-            )
-        except Exception:
-            pass
+    try:
+        _db().force_sub_channels.update_one(
+            {"channel_username": channel_username}, {"$set": {"is_active": False}}
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -977,119 +522,98 @@ def generate_link_id(channel_username: str, user_id: int,
                       never_expires: bool = False, channel_title: str = None,
                       source_bot_username: str = None) -> str:
     link_id = secrets.token_urlsafe(16)
-    _pg_run("""
-        INSERT INTO generated_links
-            (link_id, channel_username, user_id, never_expires, channel_title, source_bot_username)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (link_id) DO UPDATE SET channel_username = EXCLUDED.channel_username
-    """, (link_id, channel_username, user_id, never_expires, channel_title, source_bot_username))
-    if _MG.db is not None:
-        try:
-            _MG.db.generated_links.insert_one({
-                "link_id": link_id, "channel_username": channel_username,
-                "user_id": user_id, "never_expires": never_expires,
-                "channel_title": channel_title, "source_bot_username": source_bot_username,
-                "created_time": datetime.utcnow(),
-            })
-        except Exception:
-            pass
+    try:
+        _db().generated_links.insert_one({
+            "link_id": link_id, "channel_username": channel_username,
+            "user_id": user_id, "never_expires": never_expires,
+            "channel_title": channel_title, "source_bot_username": source_bot_username,
+            "created_time": datetime.utcnow(),
+        })
+    except Exception as exc:
+        logger.error(f"generate_link_id: {exc}")
     return link_id
 
 
 def get_link_info(link_id: str) -> Optional[tuple]:
-    row = _pg_exec("""
-        SELECT channel_username, user_id, created_time, never_expires
-        FROM generated_links WHERE link_id = %s
-    """, (link_id,))
-    if row:
-        return row
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.generated_links.find_one({"link_id": link_id})
-            if doc:
-                return (doc.get("channel_username"), doc.get("user_id"),
-                        doc.get("created_time"), doc.get("never_expires", False))
-        except Exception:
-            pass
+    try:
+        doc = _db().generated_links.find_one({"link_id": link_id})
+        if doc:
+            return (doc.get("channel_username"), doc.get("user_id"),
+                    doc.get("created_time"), doc.get("never_expires", False))
+    except Exception:
+        pass
     return None
 
 
 def get_all_links(bot_username: str = None, limit: int = 50, offset: int = 0) -> list:
-    if bot_username:
-        rows = _pg_exec_many("""
-            SELECT link_id, channel_username, channel_title, source_bot_username, created_time, never_expires
-            FROM generated_links WHERE source_bot_username = %s
-            ORDER BY created_time DESC LIMIT %s OFFSET %s
-        """, (bot_username, limit, offset))
-    else:
-        rows = _pg_exec_many("""
-            SELECT link_id, channel_username, channel_title, source_bot_username, created_time, never_expires
-            FROM generated_links ORDER BY created_time DESC LIMIT %s OFFSET %s
-        """, (limit, offset))
-    if rows is not None:
-        return rows
-    return []
+    try:
+        filt = {"source_bot_username": bot_username} if bot_username else {}
+        cursor = (
+            _db().generated_links.find(filt, {"_id": 0})
+            .sort("created_time", DESCENDING)
+            .skip(offset)
+            .limit(limit)
+        )
+        return [
+            (d.get("link_id"), d.get("channel_username"), d.get("channel_title"),
+             d.get("source_bot_username"), d.get("created_time"), d.get("never_expires", False))
+            for d in cursor
+        ]
+    except Exception:
+        return []
 
 
 def get_links_without_title(bot_username: str = None) -> list:
-    if bot_username:
-        rows = _pg_exec_many("""
-            SELECT link_id, channel_username, source_bot_username FROM generated_links
-            WHERE (channel_title IS NULL OR channel_title = '') AND source_bot_username = %s
-            ORDER BY created_time DESC
-        """, (bot_username,))
-    else:
-        rows = _pg_exec_many("""
-            SELECT link_id, channel_username, source_bot_username FROM generated_links
-            WHERE channel_title IS NULL OR channel_title = ''
-            ORDER BY created_time DESC
-        """)
-    return rows or []
+    try:
+        filt: dict = {"$or": [{"channel_title": None}, {"channel_title": ""}]}
+        if bot_username:
+            filt["source_bot_username"] = bot_username
+        cursor = _db().generated_links.find(filt).sort("created_time", DESCENDING)
+        return [
+            (d.get("link_id"), d.get("channel_username"), d.get("source_bot_username"))
+            for d in cursor
+        ]
+    except Exception:
+        return []
 
 
 def update_link_title(link_id: str, channel_title: str) -> None:
-    _pg_run("UPDATE generated_links SET channel_title = %s WHERE link_id = %s",
-            (channel_title, link_id))
+    try:
+        _db().generated_links.update_one(
+            {"link_id": link_id}, {"$set": {"channel_title": channel_title}}
+        )
+    except Exception:
+        pass
 
 
 def move_links_to_bot(from_bot_username: str, to_bot_username: str) -> int:
-    with _pg() as conn:
-        if conn is None:
-            return 0
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE generated_links SET source_bot_username = %s
-            WHERE source_bot_username = %s
-        """, (to_bot_username, from_bot_username))
-        return cur.rowcount
+    try:
+        res = _db().generated_links.update_many(
+            {"source_bot_username": from_bot_username},
+            {"$set": {"source_bot_username": to_bot_username}},
+        )
+        return res.modified_count
+    except Exception:
+        return 0
 
 
 def get_links_count(bot_username: str = None) -> int:
-    if bot_username:
-        row = _pg_exec("SELECT COUNT(*) FROM generated_links WHERE source_bot_username = %s",
-                       (bot_username,))
-    else:
-        row = _pg_exec("SELECT COUNT(*) FROM generated_links")
-    return row[0] if row else 0
+    try:
+        filt = {"source_bot_username": bot_username} if bot_username else {}
+        return _db().generated_links.count_documents(filt)
+    except Exception:
+        return 0
 
 
 def cleanup_expired_links() -> None:
-    cutoff = datetime.utcnow() - timedelta(days=7)
-    with _pg() as conn:
-        if conn is None:
-            return
-        cur = conn.cursor()
-        cur.execute("DELETE FROM generated_links WHERE created_time < %s AND never_expires = FALSE",
-                    (cutoff,))
-        logger.info(f"[NeonDB] Cleaned {cur.rowcount} expired links")
-    if _MG.db is not None:
-        try:
-            res = _MG.db.generated_links.delete_many(
-                {"created_time": {"$lt": cutoff}, "never_expires": False}
-            )
-            logger.info(f"[MongoDB] Cleaned {res.deleted_count} expired links")
-        except Exception:
-            pass
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        res = _db().generated_links.delete_many(
+            {"created_time": {"$lt": cutoff}, "never_expires": False}
+        )
+        logger.info(f"[MongoDB] Cleaned {res.deleted_count} expired links")
+    except Exception as exc:
+        logger.error(f"cleanup_expired_links: {exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1097,65 +621,40 @@ def cleanup_expired_links() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_clone_bot(bot_token: str, bot_username: str) -> bool:
-    ok = _pg_run("""
-        INSERT INTO clone_bots (bot_token, bot_username, is_active)
-        VALUES (%s, %s, TRUE)
-        ON CONFLICT (bot_token) DO UPDATE
-            SET bot_username = EXCLUDED.bot_username, is_active = TRUE
-    """, (bot_token, bot_username))
-    if _MG.db is not None:
-        try:
-            _MG.db.clone_bots.update_one(
-                {"bot_token": bot_token},
-                {"$set": {"bot_token": bot_token, "bot_username": bot_username, "is_active": True}},
-                upsert=True,
-            )
-        except Exception:
-            pass
-    return bool(ok)
+    try:
+        _db().clone_bots.update_one(
+            {"bot_token": bot_token},
+            {"$set": {"bot_token": bot_token, "bot_username": bot_username, "is_active": True},
+             "$setOnInsert": {"added_date": datetime.utcnow()}},
+            upsert=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def get_all_clone_bots(active_only: bool = False) -> list:
-    if active_only:
-        rows = _pg_exec_many("""
-            SELECT id, bot_token, bot_username, is_active, added_date
-            FROM clone_bots WHERE is_active = TRUE ORDER BY added_date
-        """)
-    else:
-        rows = _pg_exec_many("""
-            SELECT id, bot_token, bot_username, is_active, added_date
-            FROM clone_bots ORDER BY added_date
-        """)
-    if rows is not None:
-        return rows
-    if _MG.db is not None:
-        try:
-            filt = {"is_active": True} if active_only else {}
-            return [(None, d["bot_token"], d["bot_username"], d.get("is_active", True), None)
-                    for d in _MG.db.clone_bots.find(filt)]
-        except Exception:
-            pass
-    return []
+    try:
+        filt = {"is_active": True} if active_only else {}
+        return [
+            (d.get("_id"), d.get("bot_token"), d.get("bot_username"),
+             d.get("is_active", True), d.get("added_date"))
+            for d in _db().clone_bots.find(filt).sort("added_date", ASCENDING)
+        ]
+    except Exception:
+        return []
 
 
 def remove_clone_bot(bot_username: str) -> bool:
     uname = bot_username.lstrip("@").lower()
-    with _pg() as conn:
-        if conn:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE clone_bots SET is_active = FALSE WHERE LOWER(bot_username) = %s",
-                (uname,)
-            )
-    if _MG.db is not None:
-        try:
-            _MG.db.clone_bots.update_one(
-                {"bot_username": {"$regex": f"^{uname}$", "$options": "i"}},
-                {"$set": {"is_active": False}},
-            )
-        except Exception:
-            pass
-    return True
+    try:
+        _db().clone_bots.update_one(
+            {"bot_username": {"$regex": f"^{uname}$", "$options": "i"}},
+            {"$set": {"is_active": False}},
+        )
+        return True
+    except Exception:
+        return False
 
 
 def get_main_bot_token() -> str:
@@ -1167,77 +666,84 @@ def set_main_bot_token(token: str) -> None:
 
 
 def am_i_a_clone_token(bot_token: str) -> bool:
-    row = _pg_exec(
-        "SELECT 1 FROM clone_bots WHERE bot_token = %s AND is_active = TRUE",
-        (bot_token,)
-    )
-    if row:
-        return True
-    if _MG.db is not None:
-        try:
-            return _MG.db.clone_bots.find_one({"bot_token": bot_token, "is_active": True}) is not None
-        except Exception:
-            pass
-    return False
+    try:
+        return _db().clone_bots.find_one({"bot_token": bot_token, "is_active": True}) is not None
+    except Exception:
+        return False
 
 
 def get_clone_bot_by_username(bot_username: str) -> Optional[tuple]:
     uname = bot_username.lstrip("@").lower()
-    row = _pg_exec("""
-        SELECT id, bot_token, bot_username, is_active FROM clone_bots
-        WHERE LOWER(bot_username) = %s
-    """, (uname,))
-    return row
+    try:
+        doc = _db().clone_bots.find_one(
+            {"bot_username": {"$regex": f"^{uname}$", "$options": "i"}}
+        )
+        if doc:
+            return (doc.get("_id"), doc.get("bot_token"), doc.get("bot_username"),
+                    doc.get("is_active", True))
+    except Exception:
+        pass
+    return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  CATEGORY SETTINGS
 # ──────────────────────────────────────────────────────────────────────────────
 
+_CATEGORY_DEFAULTS = {
+    "template_name": "template1",
+    "branding": "",
+    "buttons": "[]",
+    "caption_template": "",
+    "thumbnail_url": "",
+    "font_style": "normal",
+    "logo_file_id": None,
+    "logo_position": "bottom",
+    "watermark_text": None,
+    "watermark_position": "center",
+}
+
+
 def get_category_settings(category: str) -> dict:
-    row = _pg_exec("""
-        SELECT template_name, branding, buttons, caption_template,
-               thumbnail_url, font_style, logo_file_id, logo_position,
-               watermark_text, watermark_position
-        FROM category_settings WHERE category = %s
-    """, (category,))
-    if row:
+    try:
+        doc = _db().category_settings.find_one({"category": category})
+        if not doc:
+            # Insert defaults
+            new = {"category": category, **_CATEGORY_DEFAULTS}
+            _db().category_settings.update_one(
+                {"category": category}, {"$setOnInsert": new}, upsert=True
+            )
+            doc = new
+        raw_buttons = doc.get("buttons", "[]") or "[]"
         return {
-            "template_name": row[0] or "template1",
-            "branding": row[1] or "",
-            "buttons": json.loads(row[2]) if row[2] else [],
-            "caption_template": row[3] or "",
-            "thumbnail_url": row[4] or "",
-            "font_style": row[5] or "normal",
-            "logo_file_id": row[6],
-            "logo_position": row[7] or "bottom",
-            "watermark_text": row[8],
-            "watermark_position": row[9] or "center",
+            "template_name": doc.get("template_name") or "template1",
+            "branding": doc.get("branding") or "",
+            "buttons": json.loads(raw_buttons) if isinstance(raw_buttons, str) else raw_buttons,
+            "caption_template": doc.get("caption_template") or "",
+            "thumbnail_url": doc.get("thumbnail_url") or "",
+            "font_style": doc.get("font_style") or "normal",
+            "logo_file_id": doc.get("logo_file_id"),
+            "logo_position": doc.get("logo_position") or "bottom",
+            "watermark_text": doc.get("watermark_text"),
+            "watermark_position": doc.get("watermark_position") or "center",
         }
-    # Insert defaults
-    _pg_run("""
-        INSERT INTO category_settings
-            (category, template_name, branding, buttons, caption_template,
-             thumbnail_url, font_style, watermark_position)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (category) DO NOTHING
-    """, (category, "template1", "", "[]", "", "", "normal", "center"))
-    return {
-        "template_name": "template1", "branding": "", "buttons": [],
-        "caption_template": "", "thumbnail_url": "", "font_style": "normal",
-        "logo_file_id": None, "logo_position": "bottom",
-        "watermark_text": None, "watermark_position": "center",
-    }
+    except Exception as exc:
+        logger.error(f"get_category_settings: {exc}")
+        return {
+            "template_name": "template1", "branding": "", "buttons": [],
+            "caption_template": "", "thumbnail_url": "", "font_style": "normal",
+            "logo_file_id": None, "logo_position": "bottom",
+            "watermark_text": None, "watermark_position": "center",
+        }
 
 
 def update_category_field(category: str, field: str, value: Any) -> bool:
     try:
-        with _pg() as conn:
-            if conn is None:
-                return False
-            cur = conn.cursor()
-            cur.execute(f"UPDATE category_settings SET {field} = %s WHERE category = %s",
-                        (value, category))
+        _db().category_settings.update_one(
+            {"category": category},
+            {"$set": {field: value}},
+            upsert=True,
+        )
         return True
     except Exception as exc:
         logger.error(f"update_category_field {field}: {exc}")
@@ -1274,82 +780,139 @@ def update_category_logo_position(category: str, position: str) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_auto_forward_connection(source_chat_id, target_chat_id, **kwargs) -> int:
-    with _pg() as conn:
-        if conn is None:
-            return 0
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO auto_forward_connections
-                (source_chat_id, target_chat_id, delay_seconds, protect_content,
-                 silent, keep_tag, pin_message, delete_source)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-        """, (source_chat_id, target_chat_id,
-              kwargs.get("delay", 0), kwargs.get("protect", False),
-              kwargs.get("silent", False), kwargs.get("keep_tag", False),
-              kwargs.get("pin", False), kwargs.get("delete_src", False)))
-        row = cur.fetchone()
-        return row[0] if row else 0
+    try:
+        new_id = _next_id("auto_forward_connections")
+        _db().auto_forward_connections.insert_one({
+            "id": new_id,
+            "source_chat_id": source_chat_id,
+            "source_chat_username": kwargs.get("source_chat_username"),
+            "target_chat_id": target_chat_id,
+            "active": True,
+            "delay_seconds": kwargs.get("delay", 0),
+            "protect_content": kwargs.get("protect", False),
+            "silent": kwargs.get("silent", False),
+            "keep_tag": kwargs.get("keep_tag", False),
+            "pin_message": kwargs.get("pin", False),
+            "delete_source": kwargs.get("delete_src", False),
+            "created_at": datetime.utcnow(),
+        })
+        return new_id
+    except Exception as exc:
+        logger.error(f"add_auto_forward_connection: {exc}")
+        return 0
+
 
 def get_auto_forward_connections(active_only=True) -> list:
-    if active_only:
-        rows = _pg_exec_many(
-            "SELECT * FROM auto_forward_connections WHERE active = TRUE ORDER BY created_at DESC"
-        )
-    else:
-        rows = _pg_exec_many(
-            "SELECT * FROM auto_forward_connections ORDER BY created_at DESC"
-        )
-    return rows or []
+    try:
+        filt = {"active": True} if active_only else {}
+        docs = list(_db().auto_forward_connections.find(filt).sort("created_at", DESCENDING))
+        # Return as tuples mirroring the original SQL column order
+        # id, source_chat_id, source_chat_username, target_chat_id, active,
+        # delay_seconds, protect_content, silent, keep_tag, pin_message, delete_source, created_at
+        return [
+            (d.get("id"), d.get("source_chat_id"), d.get("source_chat_username"),
+             d.get("target_chat_id"), d.get("active", True), d.get("delay_seconds", 0),
+             d.get("protect_content", False), d.get("silent", False),
+             d.get("keep_tag", False), d.get("pin_message", False),
+             d.get("delete_source", False), d.get("created_at"))
+            for d in docs
+        ]
+    except Exception:
+        return []
+
 
 def delete_auto_forward_connection(conn_id) -> None:
-    _pg_run("DELETE FROM auto_forward_connections WHERE id = %s", (conn_id,))
+    try:
+        _db().auto_forward_connections.delete_one({"id": conn_id})
+        _db().auto_forward_filters.delete_many({"connection_id": conn_id})
+        _db().auto_forward_replacements.delete_many({"connection_id": conn_id})
+        _db().auto_forward_state.delete_one({"connection_id": conn_id})
+    except Exception:
+        pass
+
 
 def toggle_auto_forward_connection(conn_id, active) -> None:
-    _pg_run("UPDATE auto_forward_connections SET active = %s WHERE id = %s", (active, conn_id))
+    try:
+        _db().auto_forward_connections.update_one(
+            {"id": conn_id}, {"$set": {"active": active}}
+        )
+    except Exception:
+        pass
+
 
 def add_auto_forward_filter(conn_id, allowed_media=None, blacklist=None, whitelist=None) -> None:
-    _pg_run("""
-        INSERT INTO auto_forward_filters (connection_id, allowed_media, blacklist, whitelist)
-        VALUES (%s, %s, %s, %s)
-    """, (conn_id, allowed_media or [], blacklist or [], whitelist or []))
+    try:
+        _db().auto_forward_filters.insert_one({
+            "connection_id": conn_id,
+            "allowed_media": allowed_media or [],
+            "blacklist": blacklist or [],
+            "whitelist": whitelist or [],
+            "blacklist_words": "",
+            "whitelist_words": "",
+            "caption_override": "",
+            "enable_in_dm": True,
+            "enable_in_group": True,
+        })
+    except Exception:
+        pass
+
 
 def update_auto_forward_filter(conn_id, allowed_media=None, blacklist=None, whitelist=None) -> None:
-    _pg_run("""
-        UPDATE auto_forward_filters SET allowed_media=%s, blacklist=%s, whitelist=%s
-        WHERE connection_id=%s
-    """, (allowed_media or [], blacklist or [], whitelist or [], conn_id))
+    try:
+        _db().auto_forward_filters.update_one(
+            {"connection_id": conn_id},
+            {"$set": {"allowed_media": allowed_media or [],
+                      "blacklist": blacklist or [],
+                      "whitelist": whitelist or []}},
+        )
+    except Exception:
+        pass
+
 
 def add_auto_forward_replacement(conn_id, old, new) -> None:
-    _pg_run("""
-        INSERT INTO auto_forward_replacements (connection_id, old_pattern, new_pattern)
-        VALUES (%s, %s, %s)
-    """, (conn_id, old, new))
+    try:
+        _db().auto_forward_replacements.insert_one({
+            "connection_id": conn_id, "old_pattern": old, "new_pattern": new,
+        })
+    except Exception:
+        pass
+
 
 def get_auto_forward_replacements(conn_id) -> list:
-    rows = _pg_exec_many(
-        "SELECT old_pattern, new_pattern FROM auto_forward_replacements WHERE connection_id=%s",
-        (conn_id,)
-    )
-    return rows or []
+    try:
+        return [
+            (d.get("old_pattern"), d.get("new_pattern"))
+            for d in _db().auto_forward_replacements.find({"connection_id": conn_id})
+        ]
+    except Exception:
+        return []
+
 
 def delete_auto_forward_replacement(conn_id, old) -> None:
-    _pg_run(
-        "DELETE FROM auto_forward_replacements WHERE connection_id=%s AND old_pattern=%s",
-        (conn_id, old)
-    )
+    try:
+        _db().auto_forward_replacements.delete_one({"connection_id": conn_id, "old_pattern": old})
+    except Exception:
+        pass
+
 
 def set_auto_forward_last_message(conn_id, msg_id) -> None:
-    _pg_run("""
-        INSERT INTO auto_forward_state (connection_id, last_message_id) VALUES (%s, %s)
-        ON CONFLICT (connection_id) DO UPDATE
-            SET last_message_id = EXCLUDED.last_message_id, updated_at = NOW()
-    """, (conn_id, msg_id))
+    try:
+        _db().auto_forward_state.update_one(
+            {"connection_id": conn_id},
+            {"$set": {"connection_id": conn_id, "last_message_id": msg_id,
+                      "updated_at": datetime.utcnow()}},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
 
 def get_auto_forward_last_message(conn_id) -> int:
-    row = _pg_exec(
-        "SELECT last_message_id FROM auto_forward_state WHERE connection_id=%s", (conn_id,)
-    )
-    return row[0] if row else 0
+    try:
+        doc = _db().auto_forward_state.find_one({"connection_id": conn_id})
+        return doc.get("last_message_id", 0) if doc else 0
+    except Exception:
+        return 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1357,29 +920,53 @@ def get_auto_forward_last_message(conn_id) -> int:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_manga_auto(title, target_chat_id, watermark=False, combine_pdf=False) -> int:
-    with _pg() as conn:
-        if conn is None:
-            return 0
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO manga_auto_update (manga_title, target_chat_id, watermark, combine_pdf, active)
-            VALUES (%s, %s, %s, %s, TRUE) RETURNING id
-        """, (title, target_chat_id, watermark, combine_pdf))
-        row = cur.fetchone()
-        return row[0] if row else 0
+    try:
+        new_id = _next_id("manga_auto_update")
+        _db().manga_auto_update.insert_one({
+            "id": new_id,
+            "manga_title": title,
+            "manga_id": None,
+            "last_chapter": None,
+            "target_chat_id": target_chat_id,
+            "watermark": watermark,
+            "combine_pdf": combine_pdf,
+            "active": True,
+            "last_checked": datetime.utcnow(),
+            "created_at": datetime.utcnow(),
+        })
+        return new_id
+    except Exception as exc:
+        logger.error(f"add_manga_auto: {exc}")
+        return 0
+
 
 def get_manga_auto_list() -> list:
-    rows = _pg_exec_many("""
-        SELECT id, manga_title, last_chapter, target_chat_id, active
-        FROM manga_auto_update ORDER BY id
-    """)
-    return rows or []
+    try:
+        return [
+            (d.get("id"), d.get("manga_title"), d.get("last_chapter"),
+             d.get("target_chat_id"), d.get("active", True))
+            for d in _db().manga_auto_update.find({}).sort("id", ASCENDING)
+        ]
+    except Exception:
+        return []
+
 
 def delete_manga_auto(manga_id) -> None:
-    _pg_run("DELETE FROM manga_auto_update WHERE id=%s", (manga_id,))
+    try:
+        _db().manga_auto_update.delete_one({"id": manga_id})
+    except Exception:
+        pass
+
 
 def toggle_manga_auto(manga_id) -> None:
-    _pg_run("UPDATE manga_auto_update SET active = NOT active WHERE id=%s", (manga_id,))
+    try:
+        doc = _db().manga_auto_update.find_one({"id": manga_id})
+        if doc:
+            _db().manga_auto_update.update_one(
+                {"id": manga_id}, {"$set": {"active": not doc.get("active", True)}}
+            )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1388,30 +975,51 @@ def toggle_manga_auto(manga_id) -> None:
 
 def add_scheduled_broadcast(admin_id, message_text, execute_at,
                              media_file_id=None, media_type=None) -> int:
-    with _pg() as conn:
-        if conn is None:
-            return 0
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO scheduled_broadcasts
-                (admin_id, message_text, media_file_id, media_type, execute_at)
-            VALUES (%s, %s, %s, %s, %s) RETURNING id
-        """, (admin_id, message_text, media_file_id, media_type, execute_at))
-        row = cur.fetchone()
-        return row[0] if row else 0
+    try:
+        new_id = _next_id("scheduled_broadcasts")
+        _db().scheduled_broadcasts.insert_one({
+            "id": new_id,
+            "admin_id": admin_id,
+            "message_text": message_text,
+            "media_file_id": media_file_id,
+            "media_type": media_type,
+            "execute_at": execute_at,
+            "status": "pending",
+            "created_at": datetime.utcnow(),
+        })
+        return new_id
+    except Exception as exc:
+        logger.error(f"add_scheduled_broadcast: {exc}")
+        return 0
+
 
 def get_pending_scheduled_broadcasts() -> list:
-    rows = _pg_exec_many("""
-        SELECT id, admin_id, message_text, media_file_id, media_type
-        FROM scheduled_broadcasts WHERE status='pending' AND execute_at <= NOW()
-    """)
-    return rows or []
+    try:
+        now = datetime.utcnow()
+        docs = list(_db().scheduled_broadcasts.find(
+            {"status": "pending", "execute_at": {"$lte": now}}
+        ))
+        return [
+            (d.get("id"), d.get("admin_id"), d.get("message_text"),
+             d.get("media_file_id"), d.get("media_type"))
+            for d in docs
+        ]
+    except Exception:
+        return []
+
 
 def mark_scheduled_broadcast_sent(b_id) -> None:
-    _pg_run("UPDATE scheduled_broadcasts SET status='sent' WHERE id=%s", (b_id,))
+    try:
+        _db().scheduled_broadcasts.update_one({"id": b_id}, {"$set": {"status": "sent"}})
+    except Exception:
+        pass
+
 
 def mark_scheduled_broadcast_failed(b_id) -> None:
-    _pg_run("UPDATE scheduled_broadcasts SET status='failed' WHERE id=%s", (b_id,))
+    try:
+        _db().scheduled_broadcasts.update_one({"id": b_id}, {"$set": {"status": "failed"}})
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1419,19 +1027,26 @@ def mark_scheduled_broadcast_failed(b_id) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def set_feature_flag(feature: str, entity_id: int, entity_type: str, enabled: bool) -> None:
-    _pg_run("""
-        INSERT INTO feature_flags (feature_name, entity_id, entity_type, enabled)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (feature_name, entity_id, entity_type) DO UPDATE SET enabled=EXCLUDED.enabled
-    """, (feature, entity_id, entity_type, enabled))
+    try:
+        _db().feature_flags.update_one(
+            {"feature_name": feature, "entity_id": entity_id, "entity_type": entity_type},
+            {"$set": {"feature_name": feature, "entity_id": entity_id,
+                      "entity_type": entity_type, "enabled": enabled}},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
 
 def get_feature_flag(feature: str, entity_id: int, entity_type: str) -> bool:
-    row = _pg_exec("""
-        SELECT enabled FROM feature_flags
-        WHERE feature_name=%s AND entity_id=%s AND entity_type=%s
-    """, (feature, entity_id, entity_type))
-    if row:
-        return bool(row[0])
+    try:
+        doc = _db().feature_flags.find_one(
+            {"feature_name": feature, "entity_id": entity_id, "entity_type": entity_type}
+        )
+        if doc is not None:
+            return bool(doc.get("enabled", True))
+    except Exception:
+        pass
     if entity_type == "global":
         return True
     return get_feature_flag(feature, 0, "global")
@@ -1442,38 +1057,46 @@ def get_feature_flag(feature: str, entity_id: int, entity_type: str) -> bool:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def load_upload_progress() -> dict:
-    row = _pg_exec("""
-        SELECT target_chat_id, season, episode, total_episode, video_count,
-               selected_qualities, base_caption, auto_caption_enabled
-        FROM bot_progress WHERE id=1
-    """)
-    if row:
-        return {
-            "target_chat_id": row[0], "season": row[1], "episode": row[2],
-            "total_episode": row[3], "video_count": row[4],
-            "selected_qualities": row[5].split(",") if row[5] else [],
-            "base_caption": row[6] or "", "auto_caption_enabled": row[7],
-        }
-    _pg_run("INSERT INTO bot_progress (id, base_caption, auto_caption_enabled) VALUES (1, '', TRUE)")
+    try:
+        doc = _db().bot_progress.find_one({"id": 1})
+        if doc:
+            return {
+                "target_chat_id": doc.get("target_chat_id"),
+                "season": doc.get("season", 1),
+                "episode": doc.get("episode", 1),
+                "total_episode": doc.get("total_episode", 1),
+                "video_count": doc.get("video_count", 0),
+                "selected_qualities": doc.get("selected_qualities", "480p,720p,1080p").split(","),
+                "base_caption": doc.get("base_caption", ""),
+                "auto_caption_enabled": doc.get("auto_caption_enabled", True),
+            }
+    except Exception:
+        pass
     return {
         "target_chat_id": None, "season": 1, "episode": 1, "total_episode": 1,
         "video_count": 0, "selected_qualities": ["480p", "720p", "1080p"],
         "base_caption": "", "auto_caption_enabled": True,
     }
 
+
 def save_upload_progress(progress: dict) -> None:
-    _pg_run("""
-        UPDATE bot_progress SET
-            target_chat_id=%s, season=%s, episode=%s, total_episode=%s,
-            video_count=%s, selected_qualities=%s, base_caption=%s,
-            auto_caption_enabled=%s
-        WHERE id=1
-    """, (
-        progress["target_chat_id"], progress["season"], progress["episode"],
-        progress["total_episode"], progress["video_count"],
-        ",".join(progress["selected_qualities"]),
-        progress["base_caption"], progress["auto_caption_enabled"],
-    ))
+    try:
+        _db().bot_progress.update_one(
+            {"id": 1},
+            {"$set": {
+                "target_chat_id": progress["target_chat_id"],
+                "season": progress["season"],
+                "episode": progress["episode"],
+                "total_episode": progress["total_episode"],
+                "video_count": progress["video_count"],
+                "selected_qualities": ",".join(progress["selected_qualities"]),
+                "base_caption": progress["base_caption"],
+                "auto_caption_enabled": progress["auto_caption_enabled"],
+            }},
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.error(f"save_upload_progress: {exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1481,25 +1104,38 @@ def save_upload_progress(progress: dict) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_connected_group(group_id, group_username, group_title, connected_by) -> None:
-    _pg_run("""
-        INSERT INTO connected_groups (group_id, group_username, group_title, connected_by)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (group_id) DO UPDATE SET active=TRUE
-    """, (group_id, group_username, group_title, connected_by))
+    try:
+        _db().connected_groups.update_one(
+            {"group_id": group_id},
+            {"$set": {"group_id": group_id, "group_username": group_username,
+                      "group_title": group_title, "connected_by": connected_by,
+                      "active": True},
+             "$setOnInsert": {"connected_at": datetime.utcnow()}},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
 
 def remove_connected_group(group_id) -> None:
-    _pg_run("UPDATE connected_groups SET active=FALSE WHERE group_id=%s", (group_id,))
+    try:
+        _db().connected_groups.update_one(
+            {"group_id": group_id}, {"$set": {"active": False}}
+        )
+    except Exception:
+        pass
+
 
 def get_connected_groups(active_only=True) -> list:
-    if active_only:
-        rows = _pg_exec_many(
-            "SELECT group_id, group_username, group_title, connected_at FROM connected_groups WHERE active=TRUE"
-        )
-    else:
-        rows = _pg_exec_many(
-            "SELECT group_id, group_username, group_title, connected_at FROM connected_groups"
-        )
-    return rows or []
+    try:
+        filt = {"active": True} if active_only else {}
+        return [
+            (d.get("group_id"), d.get("group_username"), d.get("group_title"),
+             d.get("connected_at"))
+            for d in _db().connected_groups.find(filt)
+        ]
+    except Exception:
+        return []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1507,23 +1143,36 @@ def get_connected_groups(active_only=True) -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_broadcast_history(admin_id, mode, total_users, message_text) -> int:
-    with _pg() as conn:
-        if conn is None:
-            return 0
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO broadcast_history (admin_id, mode, total_users, message_text)
-            VALUES (%s, %s, %s, %s) RETURNING id
-        """, (admin_id, mode, total_users, message_text))
-        row = cur.fetchone()
-        return row[0] if row else 0
+    try:
+        new_id = _next_id("broadcast_history")
+        _db().broadcast_history.insert_one({
+            "id": new_id,
+            "admin_id": admin_id,
+            "mode": mode,
+            "total_users": total_users,
+            "success": 0,
+            "blocked": 0,
+            "deleted": 0,
+            "failed": 0,
+            "message_text": message_text,
+            "started_at": datetime.utcnow(),
+            "completed_at": None,
+        })
+        return new_id
+    except Exception as exc:
+        logger.error(f"add_broadcast_history: {exc}")
+        return 0
+
 
 def update_broadcast_history(b_id, success, blocked, deleted, failed) -> None:
-    _pg_run("""
-        UPDATE broadcast_history
-        SET completed_at=NOW(), success=%s, blocked=%s, deleted=%s, failed=%s
-        WHERE id=%s
-    """, (success, blocked, deleted, failed, b_id))
+    try:
+        _db().broadcast_history.update_one(
+            {"id": b_id},
+            {"$set": {"success": success, "blocked": blocked, "deleted": deleted,
+                      "failed": failed, "completed_at": datetime.utcnow()}},
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1532,36 +1181,39 @@ def update_broadcast_history(b_id, success, blocked, deleted, failed) -> None:
 
 def cache_post(category, title, anilist_id, media_data) -> None:
     try:
-        # Use psycopg2.extras.Json so large/special-char JSON is never truncated
-        try:
-            from psycopg2.extras import Json as _PgJson
-            json_val = _PgJson(media_data)
-        except ImportError:
-            json_val = json.dumps(media_data, ensure_ascii=False)
-        _pg_run("""
-            INSERT INTO posts_cache (category, title, anilist_id, media_data)
-            VALUES (%s, %s, %s, %s)
-        """, (category, title, anilist_id, json_val))
+        _db().posts_cache.insert_one({
+            "category": category,
+            "title": title,
+            "anilist_id": anilist_id,
+            "media_data": media_data,
+            "created_at": datetime.utcnow(),
+        })
     except Exception as exc:
         logger.error(f"cache_post failed: {exc}")
 
+
 def get_cached_post(anilist_id) -> Optional[dict]:
-    row = _pg_exec(
-        "SELECT category, title, media_data FROM posts_cache WHERE anilist_id=%s ORDER BY created_at DESC LIMIT 1",
-        (anilist_id,)
-    )
-    if row:
-        return {"category": row[0], "title": row[1], "media_data": json.loads(row[2])}
+    try:
+        doc = _db().posts_cache.find_one(
+            {"anilist_id": anilist_id},
+            sort=[("created_at", DESCENDING)]
+        )
+        if doc:
+            return {"category": doc.get("category"), "title": doc.get("title"),
+                    "media_data": doc.get("media_data")}
+    except Exception:
+        pass
     return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  MONGODB-PRIMARY: POSTER PREMIUM
+#  POSTER PREMIUM  (primary: MongoDB)
 # ──────────────────────────────────────────────────────────────────────────────
 
 POSTER_TASK_LIMITS = {
     "gold": 50, "silver": 40, "bronze": 30, "default": 20,
 }
+
 
 def _today() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
@@ -1569,88 +1221,50 @@ def _today() -> str:
 
 def add_poster_premium(user_id: int, rank: str,
                         expiry_time: Optional[datetime] = None) -> bool:
-    data = {"user_id": user_id, "rank": rank, "expiry_time": expiry_time,
-            "added_at": datetime.utcnow()}
-    if _MG.db is not None:
-        try:
-            _MG.db.poster_premium.update_one(
-                {"user_id": user_id}, {"$set": data}, upsert=True
-            )
-            return True
-        except Exception as exc:
-            logger.error(f"add_poster_premium: {exc}")
-    # PG fallback: store in bot_settings as JSON
     try:
-        import json as _j
-        existing = json.loads(get_setting("poster_premium_data", "{}") or "{}")
-        existing[str(user_id)] = {
-            "rank": rank,
-            "expiry_time": expiry_time.isoformat() if expiry_time else None,
-        }
-        set_setting("poster_premium_data", _j.dumps(existing))
+        _db().poster_premium.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "rank": rank, "expiry_time": expiry_time,
+                      "added_at": datetime.utcnow()}},
+            upsert=True,
+        )
         return True
-    except Exception:
+    except Exception as exc:
+        logger.error(f"add_poster_premium: {exc}")
         return False
 
 
 def get_poster_premium(user_id: int) -> Optional[dict]:
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.poster_premium.find_one({"user_id": user_id})
-            if doc:
-                expiry = doc.get("expiry_time")
-                if expiry and expiry < datetime.utcnow():
-                    _MG.db.poster_premium.delete_one({"user_id": user_id})
-                    return None
-                return doc
-        except Exception:
-            pass
-    # PG fallback
     try:
-        raw = get_setting("poster_premium_data", "{}")
-        data = json.loads(raw or "{}")
-        ud = data.get(str(user_id))
-        if ud:
-            exp = ud.get("expiry_time")
-            if exp:
-                exp_dt = datetime.fromisoformat(exp)
-                if exp_dt < datetime.utcnow():
-                    data.pop(str(user_id), None)
-                    set_setting("poster_premium_data", json.dumps(data))
-                    return None
-            return ud
+        doc = _db().poster_premium.find_one({"user_id": user_id})
+        if doc:
+            expiry = doc.get("expiry_time")
+            if expiry and expiry < datetime.utcnow():
+                _db().poster_premium.delete_one({"user_id": user_id})
+                return None
+            return doc
     except Exception:
         pass
     return None
 
 
 def remove_poster_premium(user_id: int) -> bool:
-    if _MG.db is not None:
-        try:
-            _MG.db.poster_premium.delete_one({"user_id": user_id})
-        except Exception:
-            pass
     try:
-        raw = get_setting("poster_premium_data", "{}")
-        data = json.loads(raw or "{}")
-        data.pop(str(user_id), None)
-        set_setting("poster_premium_data", json.dumps(data))
+        _db().poster_premium.delete_one({"user_id": user_id})
+        return True
     except Exception:
-        pass
-    return True
+        return False
 
 
 def get_all_poster_premium() -> list:
-    if _MG.db is not None:
-        try:
-            now = datetime.utcnow()
-            return list(_MG.db.poster_premium.find(
-                {"$or": [{"expiry_time": None}, {"expiry_time": {"$gt": now}}]},
-                {"_id": 0}
-            ))
-        except Exception:
-            pass
-    return []
+    try:
+        now = datetime.utcnow()
+        return list(_db().poster_premium.find(
+            {"$or": [{"expiry_time": None}, {"expiry_time": {"$gt": now}}]},
+            {"_id": 0}
+        ))
+    except Exception:
+        return []
 
 
 def is_poster_premium(user_id: int) -> bool:
@@ -1663,196 +1277,209 @@ def get_poster_rank(user_id: int) -> str:
 
 
 def check_and_update_poster_usage(user_id: int, limit: int) -> bool:
-    """Returns True if within limit, updates counter. Uses MongoDB for speed."""
+    """Returns True if within limit, updates counter."""
     today = _today()
-    if _MG.db is not None:
-        try:
-            res = _MG.db.poster_usage.find_one_and_update(
-                {"user_id": user_id, "date": today},
-                {"$inc": {"count": 1}},
-                upsert=True, return_document=True,
+    try:
+        res = _db().poster_usage.find_one_and_update(
+            {"user_id": user_id, "date": today},
+            {"$inc": {"count": 1}},
+            upsert=True,
+            return_document=True,
+        )
+        count = res.get("count", 1) if res else 1
+        if count > limit:
+            _db().poster_usage.update_one(
+                {"user_id": user_id, "date": today}, {"$inc": {"count": -1}}
             )
-            count = res.get("count", 1) if res else 1
-            if count > limit:
-                # Decrement back
-                _MG.db.poster_usage.update_one(
-                    {"user_id": user_id, "date": today}, {"$inc": {"count": -1}}
-                )
-                return False
-            return True
-        except Exception:
-            pass
-    # Fallback: in-memory (no persistence)
-    return True
+            return False
+        return True
+    except Exception:
+        return True
 
 
 def get_poster_usage_today(user_id: int) -> int:
     today = _today()
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.poster_usage.find_one({"user_id": user_id, "date": today})
-            return doc.get("count", 0) if doc else 0
-        except Exception:
-            pass
-    return 0
+    try:
+        doc = _db().poster_usage.find_one({"user_id": user_id, "date": today})
+        return doc.get("count", 0) if doc else 0
+    except Exception:
+        return 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  MONGODB-PRIMARY: COUPLES
+#  COUPLES  (primary: MongoDB)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_couple(user_id: int) -> Optional[dict]:
-    if _MG.db is not None:
-        try:
-            return _MG.db.couples.find_one({"user_id": user_id}, {"_id": 0})
-        except Exception:
-            pass
-    return None
+    try:
+        return _db().couples.find_one({"user_id": user_id}, {"_id": 0})
+    except Exception:
+        return None
 
 
 def set_couple(user_id: int, partner_id: int, chat_id: int) -> None:
-    if _MG.db is not None:
-        try:
-            _MG.db.couples.update_one(
-                {"user_id": user_id},
-                {"$set": {"user_id": user_id, "partner_id": partner_id,
-                          "chat_id": chat_id, "since": datetime.utcnow()}},
-                upsert=True,
-            )
-        except Exception:
-            pass
+    try:
+        _db().couples.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "partner_id": partner_id,
+                      "chat_id": chat_id, "since": datetime.utcnow()}},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 def remove_couple(user_id: int) -> None:
-    if _MG.db is not None:
-        try:
-            _MG.db.couples.delete_many(
-                {"$or": [{"user_id": user_id}, {"partner_id": user_id}]}
-            )
-        except Exception:
-            pass
+    try:
+        _db().couples.delete_many(
+            {"$or": [{"user_id": user_id}, {"partner_id": user_id}]}
+        )
+    except Exception:
+        pass
 
 
 def get_couple_of_day(chat_id: int) -> Optional[tuple]:
-    if _MG.db is not None:
-        try:
-            today = _today()
-            doc = _MG.db.couple_of_day.find_one({"chat_id": chat_id, "date": today})
-            if doc:
-                return (doc.get("user1_id"), doc.get("user2_id"))
-        except Exception:
-            pass
+    try:
+        today = _today()
+        doc = _db().couple_of_day.find_one({"chat_id": chat_id, "date": today})
+        if doc:
+            return (doc.get("user1_id"), doc.get("user2_id"))
+    except Exception:
+        pass
     return None
 
 
 def set_couple_of_day(chat_id: int, user1: int, user2: int) -> None:
-    if _MG.db is not None:
-        try:
-            today = _today()
-            _MG.db.couple_of_day.update_one(
-                {"chat_id": chat_id, "date": today},
-                {"$set": {"chat_id": chat_id, "date": today,
-                          "user1_id": user1, "user2_id": user2}},
-                upsert=True,
-            )
-        except Exception:
-            pass
+    try:
+        today = _today()
+        _db().couple_of_day.update_one(
+            {"chat_id": chat_id, "date": today},
+            {"$set": {"chat_id": chat_id, "date": today,
+                      "user1_id": user1, "user2_id": user2}},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  MONGODB-PRIMARY: CHATBOT
+#  CHATBOT  (primary: MongoDB)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def is_chatbot_enabled(chat_id: int) -> bool:
-    if _MG.db is not None:
-        try:
-            doc = _MG.db.chatbot_data.find_one({"chat_id": chat_id})
-            return bool(doc and doc.get("enabled", False))
-        except Exception:
-            pass
-    return False
+    try:
+        doc = _db().chatbot_data.find_one({"chat_id": chat_id})
+        return bool(doc and doc.get("enabled", False))
+    except Exception:
+        return False
 
 
 def set_chatbot_enabled(chat_id: int, enabled: bool) -> None:
-    if _MG.db is not None:
-        try:
-            _MG.db.chatbot_data.update_one(
-                {"chat_id": chat_id},
-                {"$set": {"chat_id": chat_id, "enabled": enabled}},
-                upsert=True,
-            )
-        except Exception:
-            pass
+    try:
+        _db().chatbot_data.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"chat_id": chat_id, "enabled": enabled}},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  ANIME CHANNEL LINKS — maps anime title ↔ channel for filter+poster system
+#  ANIME CHANNEL LINKS
 # ──────────────────────────────────────────────────────────────────────────────
 
 def add_anime_channel_link(anime_title: str, channel_id: int,
                             channel_title: str = "", link_id: str = "",
                             added_by: int = 0) -> bool:
-    """Store anime-title → channel mapping used for filter poster delivery."""
-    ok = _pg_run("""
-        INSERT INTO anime_channel_links
-            (anime_title, channel_id, channel_title, link_id, added_by)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (anime_title, channel_id) DO UPDATE
-            SET channel_title = EXCLUDED.channel_title,
-                link_id = EXCLUDED.link_id
-    """, (anime_title.strip().lower(), channel_id, channel_title, link_id, added_by))
-    return bool(ok)
+    try:
+        key = anime_title.strip().lower()
+        _db().anime_channel_links.update_one(
+            {"anime_title": key, "channel_id": channel_id},
+            {"$set": {"anime_title": key, "channel_id": channel_id,
+                      "channel_title": channel_title, "link_id": link_id,
+                      "added_by": added_by},
+             "$setOnInsert": {"created_at": datetime.utcnow()}},
+            upsert=True,
+        )
+        return True
+    except Exception:
+        return False
 
 
 def get_anime_channel_links(anime_title: str) -> list:
-    """Return list of (channel_id, channel_title, link_id) for given anime title."""
-    rows = _pg_exec_many("""
-        SELECT channel_id, channel_title, link_id
-        FROM anime_channel_links WHERE anime_title = %s
-        ORDER BY created_at DESC
-    """, (anime_title.strip().lower(),))
-    return rows or []
+    try:
+        key = anime_title.strip().lower()
+        docs = list(_db().anime_channel_links.find(
+            {"anime_title": key}
+        ).sort("created_at", DESCENDING))
+        return [(d.get("channel_id"), d.get("channel_title"), d.get("link_id")) for d in docs]
+    except Exception:
+        return []
 
 
 def get_all_anime_channel_links() -> list:
-    """Return all rows: (id, anime_title, channel_id, channel_title, link_id, created_at)."""
-    rows = _pg_exec_many("""
-        SELECT id, anime_title, channel_id, channel_title, link_id, created_at
-        FROM anime_channel_links ORDER BY anime_title
-    """)
-    return rows or []
+    try:
+        docs = list(_db().anime_channel_links.find({}).sort("anime_title", ASCENDING))
+        return [
+            (d.get("_id"), d.get("anime_title"), d.get("channel_id"),
+             d.get("channel_title"), d.get("link_id"), d.get("created_at"))
+            for d in docs
+        ]
+    except Exception:
+        return []
 
 
 def remove_anime_channel_link(anime_title: str, channel_id: int) -> None:
-    _pg_run("DELETE FROM anime_channel_links WHERE anime_title = %s AND channel_id = %s",
-            (anime_title.strip().lower(), channel_id))
+    try:
+        _db().anime_channel_links.delete_one(
+            {"anime_title": anime_title.strip().lower(), "channel_id": channel_id}
+        )
+    except Exception:
+        pass
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  FILTER POSTER CACHE
+# ──────────────────────────────────────────────────────────────────────────────
 
 def get_filter_poster_cache(cache_key: str) -> Optional[dict]:
-    row = _pg_exec("""
-        SELECT file_id, channel_id, channel_msg_id, caption, template, anime_title
-        FROM filter_poster_cache WHERE cache_key = %s
-    """, (cache_key,))
-    if row:
-        return {"file_id": row[0], "channel_id": row[1],
-                "channel_msg_id": row[2], "caption": row[3],
-                "template": row[4], "anime_title": row[5]}
+    try:
+        doc = _db().filter_poster_cache.find_one({"cache_key": cache_key})
+        if doc:
+            return {
+                "file_id": doc.get("file_id"),
+                "channel_id": doc.get("channel_id"),
+                "channel_msg_id": doc.get("channel_msg_id"),
+                "caption": doc.get("caption"),
+                "template": doc.get("template"),
+                "anime_title": doc.get("anime_title"),
+            }
+    except Exception:
+        pass
     return None
 
 
 def save_filter_poster_cache(cache_key: str, anime_title: str, template: str,
                                file_id: str, channel_id: int = 0,
                                channel_msg_id: int = 0, caption: str = "") -> None:
-    _pg_run("""
-        INSERT INTO filter_poster_cache
-            (cache_key, anime_title, template, file_id, channel_id, channel_msg_id, caption)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (cache_key) DO UPDATE
-            SET file_id = EXCLUDED.file_id,
-                channel_msg_id = EXCLUDED.channel_msg_id,
-                created_at = NOW()
-    """, (cache_key, anime_title.lower(), template, file_id,
-             channel_id, channel_msg_id, caption))
+    try:
+        _db().filter_poster_cache.update_one(
+            {"cache_key": cache_key},
+            {"$set": {
+                "cache_key": cache_key,
+                "anime_title": anime_title.lower(),
+                "template": template,
+                "file_id": file_id,
+                "channel_id": channel_id,
+                "channel_msg_id": channel_msg_id,
+                "caption": caption,
+                "created_at": datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1860,74 +1487,62 @@ def save_filter_poster_cache(cache_key: str, anime_title: str, template: str,
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _ensure_channel_welcome_table() -> None:
-    _pg_run("""
-        CREATE TABLE IF NOT EXISTS channel_welcome_settings (
-            channel_id BIGINT PRIMARY KEY,
-            enabled BOOLEAN DEFAULT TRUE,
-            welcome_text TEXT DEFAULT '',
-            image_file_id TEXT DEFAULT '',
-            image_url TEXT DEFAULT '',
-            buttons_json TEXT DEFAULT '[]',
-            added_by BIGINT DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
+    """No-op in MongoDB — collections are created automatically."""
+    pass
 
 
 def get_channel_welcome(channel_id: int) -> Optional[dict]:
-    """Return channel welcome settings dict, or None if not configured."""
-    row = _pg_exec("""
-        SELECT enabled, welcome_text, image_file_id, image_url, buttons_json
-        FROM channel_welcome_settings WHERE channel_id = %s
-    """, (channel_id,))
-    if row:
-        import json as _j
-        return {
-            "enabled":      bool(row[0]),
-            "welcome_text": row[1] or "",
-            "image_file_id": row[2] or "",
-            "image_url":    row[3] or "",
-            "buttons":      _j.loads(row[4]) if row[4] else [],
-        }
+    try:
+        doc = _db().channel_welcome_settings.find_one({"channel_id": channel_id})
+        if doc:
+            return {
+                "enabled": bool(doc.get("enabled", True)),
+                "welcome_text": doc.get("welcome_text", ""),
+                "image_file_id": doc.get("image_file_id", ""),
+                "image_url": doc.get("image_url", ""),
+                "buttons": json.loads(doc.get("buttons_json", "[]"))
+                           if isinstance(doc.get("buttons_json"), str) else doc.get("buttons", []),
+            }
+    except Exception:
+        pass
     return None
 
 
 def set_channel_welcome(channel_id: int, **kwargs) -> None:
-    """Create or update channel welcome settings."""
-    import json as _j
-    _ensure_channel_welcome_table()
     existing = get_channel_welcome(channel_id) or {}
-    _pg_run("""
-        INSERT INTO channel_welcome_settings
-            (channel_id, enabled, welcome_text, image_file_id, image_url, buttons_json, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, NOW())
-        ON CONFLICT (channel_id) DO UPDATE
-            SET enabled       = EXCLUDED.enabled,
-                welcome_text  = EXCLUDED.welcome_text,
-                image_file_id = EXCLUDED.image_file_id,
-                image_url     = EXCLUDED.image_url,
-                buttons_json  = EXCLUDED.buttons_json,
-                updated_at    = NOW()
-    """, (
-        channel_id,
-        kwargs.get("enabled",       existing.get("enabled", True)),
-        kwargs.get("welcome_text",  existing.get("welcome_text", "")),
-        kwargs.get("image_file_id", existing.get("image_file_id", "")),
-        kwargs.get("image_url",     existing.get("image_url", "")),
-        _j.dumps(kwargs.get("buttons", existing.get("buttons", []))),
-    ))
+    try:
+        _db().channel_welcome_settings.update_one(
+            {"channel_id": channel_id},
+            {"$set": {
+                "channel_id": channel_id,
+                "enabled": kwargs.get("enabled", existing.get("enabled", True)),
+                "welcome_text": kwargs.get("welcome_text", existing.get("welcome_text", "")),
+                "image_file_id": kwargs.get("image_file_id", existing.get("image_file_id", "")),
+                "image_url": kwargs.get("image_url", existing.get("image_url", "")),
+                "buttons_json": json.dumps(kwargs.get("buttons", existing.get("buttons", []))),
+                "updated_at": datetime.utcnow(),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
 
 def delete_channel_welcome(channel_id: int) -> None:
-    _pg_run("DELETE FROM channel_welcome_settings WHERE channel_id = %s", (channel_id,))
+    try:
+        _db().channel_welcome_settings.delete_one({"channel_id": channel_id})
+    except Exception:
+        pass
 
 
 def get_all_channel_welcomes() -> list:
-    """Return list of (channel_id, enabled, welcome_text) tuples."""
-    rows = _pg_exec_many(
-        "SELECT channel_id, enabled, welcome_text FROM channel_welcome_settings ORDER BY channel_id"
-    )
-    return rows or []
+    try:
+        return [
+            (d.get("channel_id"), d.get("enabled"), d.get("welcome_text"))
+            for d in _db().channel_welcome_settings.find({}).sort("channel_id", ASCENDING)
+        ]
+    except Exception:
+        return []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1935,33 +1550,22 @@ def get_all_channel_welcomes() -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class _DBManagerCompat:
-    """Compatibility shim for code that does `db_manager.get_cursor()`."""
+    """Compatibility shim. PostgreSQL cursor API is stubbed — not used by MongoDB path."""
 
     @contextmanager
     def get_connection(self):
-        with _pg() as conn:
-            yield conn
+        yield None
 
     @contextmanager
     def get_cursor(self):
-        with _pg() as conn:
-            if conn is None:
-                yield None
-                return
-            cur = conn.cursor()
-            try:
-                yield cur
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+        yield None
 
     def close_all(self):
-        if _PG.pool:
-            _PG.pool.closeall()
+        pass
 
 
 db_manager = _DBManagerCompat()
+
 
 def extract_anime_name_from_title(channel_title: str) -> str:
     """
@@ -1973,13 +1577,11 @@ def extract_anime_name_from_title(channel_title: str) -> str:
       "JJK Season 2 Hindi"         → "JJK Season 2"
       "Anime Channel"              → "Anime Channel" (unchanged)
     """
-    import re as _re
     if not channel_title:
         return ""
     t = channel_title.strip()
-    # Remove trailing language/dub markers (case-insensitive)
     _STRIP = [
-        r"\s*[\-|:–—].*$",                          # " - anything after dash"
+        r"\s*[\-|:–—].*$",
         r"\s+in\s+(hindi|english|tamil|telugu|urdu|japanese|korean|chinese)\s*$",
         r"\s+(hindi|english|tamil|telugu|urdu|japanese|korean|chinese)\s+(dubbed|dub|sub|subbed|audio|version)\s*$",
         r"\s+(dubbed|dub|subbed|sub|esub|multi.?audio|multi.?sub)\s*$",
@@ -1989,7 +1591,6 @@ def extract_anime_name_from_title(channel_title: str) -> str:
     ]
     for pat in _STRIP:
         t = _re.sub(pat, "", t, flags=_re.IGNORECASE).strip()
-    # If result is too short (< 3 chars), return original
     return t if len(t) >= 3 else channel_title.strip()
 
 
@@ -1998,114 +1599,80 @@ def extract_anime_name_from_title(channel_title: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def ensure_search_analytics_table() -> None:
-    """Create search_analytics table if it doesn't exist."""
-    _pg_run("""
-        CREATE TABLE IF NOT EXISTS search_analytics (
-            anime_title   TEXT   NOT NULL,
-            user_id       BIGINT NOT NULL,
-            last_searched TIMESTAMP DEFAULT NOW(),
-            PRIMARY KEY (anime_title, user_id)
-        )
-    """)
+    """No-op in MongoDB — collection is auto-created."""
+    pass
 
 
 def record_search_analytics(user_id: int, anime_title: str) -> None:
-    """
-    Record a search hit for user_id + anime_title.
-    Each user is counted at most ONCE per 2 weeks per title.
-    """
     if not user_id or not anime_title:
         return
     try:
-        from datetime import timedelta
-        ensure_search_analytics_table()
         key = anime_title.strip().lower()
-        row = _pg_exec(
-            "SELECT last_searched FROM search_analytics WHERE anime_title=%s AND user_id=%s",
-            (key, user_id),
-        )
         two_weeks_ago = datetime.utcnow() - timedelta(weeks=2)
-        if row and row[0] and row[0] >= two_weeks_ago:
+        doc = _db().search_analytics.find_one({"anime_title": key, "user_id": user_id})
+        if doc and doc.get("last_searched") and doc["last_searched"] >= two_weeks_ago:
             return  # Already counted within 2 weeks
-        _pg_run("""
-            INSERT INTO search_analytics (anime_title, user_id, last_searched)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (anime_title, user_id)
-            DO UPDATE SET last_searched = NOW()
-        """, (key, user_id))
+        _db().search_analytics.update_one(
+            {"anime_title": key, "user_id": user_id},
+            {"$set": {"anime_title": key, "user_id": user_id,
+                      "last_searched": datetime.utcnow()}},
+            upsert=True,
+        )
     except Exception:
         pass
 
 
 def get_top_search_analytics(limit: int = 10) -> list:
-    """
-    Return top `limit` anime titles sorted by unique-user search count.
-    Returns list of (title, count) tuples.
-    """
     try:
-        ensure_search_analytics_table()
-        rows = _pg_exec_all(
-            "SELECT anime_title, COUNT(DISTINCT user_id) AS cnt "
-            "FROM search_analytics GROUP BY anime_title ORDER BY cnt DESC LIMIT %s",
-            (limit,),
-        )
-        return [(r[0], int(r[1])) for r in (rows or [])]
+        pipeline = [
+            {"$group": {"_id": "$anime_title", "cnt": {"$sum": 1}}},
+            {"$sort": {"cnt": DESCENDING}},
+            {"$limit": limit},
+        ]
+        results = list(_db().search_analytics.aggregate(pipeline))
+        return [(r["_id"], r["cnt"]) for r in results]
     except Exception:
         return []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 #  PERSISTENT MESSAGE DELETE QUEUE
-#  Survives bot restarts — used by filter_poster GC auto-delete
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 def ensure_pending_deletes_table() -> None:
-    """Create pending_message_deletes table if it doesn't exist."""
-    _pg_run("""
-        CREATE TABLE IF NOT EXISTS pending_message_deletes (
-            id SERIAL PRIMARY KEY,
-            chat_id  BIGINT NOT NULL,
-            message_id BIGINT NOT NULL,
-            delete_at  TIMESTAMP NOT NULL
-        )
-    """)
+    """No-op in MongoDB."""
+    pass
 
 
 def save_pending_delete(chat_id: int, message_id: int, delay_seconds: int) -> None:
-    """Persist a scheduled message deletion so it survives restarts."""
     try:
-        from datetime import datetime, timedelta
         delete_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
-        _pg_run(
-            "INSERT INTO pending_message_deletes (chat_id, message_id, delete_at) "
-            "VALUES (%s, %s, %s)",
-            (chat_id, message_id, delete_at),
-        )
+        _db().pending_message_deletes.insert_one({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "delete_at": delete_at,
+        })
     except Exception:
         pass
 
 
 def remove_pending_delete(chat_id: int, message_id: int) -> None:
-    """Remove a deletion record once the message has been deleted."""
     try:
-        _pg_run(
-            "DELETE FROM pending_message_deletes WHERE chat_id=%s AND message_id=%s",
-            (chat_id, message_id),
+        _db().pending_message_deletes.delete_one(
+            {"chat_id": chat_id, "message_id": message_id}
         )
     except Exception:
         pass
 
 
 def pop_due_pending_deletes() -> list:
-    """
-    Atomically fetch-and-delete all rows whose delete_at <= now.
-    Returns list of (chat_id, message_id) tuples ready to be deleted.
-    """
+    """Atomically fetch-and-delete all rows whose delete_at <= now."""
     try:
-        rows = _pg_exec_all(
-            "DELETE FROM pending_message_deletes WHERE delete_at <= NOW() "
-            "RETURNING chat_id, message_id"
-        )
-        return [(int(r[0]), int(r[1])) for r in (rows or [])]
+        now = datetime.utcnow()
+        docs = list(_db().pending_message_deletes.find({"delete_at": {"$lte": now}}))
+        if docs:
+            ids = [d["_id"] for d in docs]
+            _db().pending_message_deletes.delete_many({"_id": {"$in": ids}})
+        return [(int(d["chat_id"]), int(d["message_id"])) for d in docs]
     except Exception:
         return []
