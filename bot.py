@@ -45,8 +45,8 @@ from lifecycle import post_init, post_shutdown
 if not BOT_TOKEN or BOT_TOKEN in ("YOUR_TOKEN_HERE", ""):
     logger.error("❌ BOT_TOKEN is not set!")
     sys.exit(1)
-if not DATABASE_URL and not MONGO_DB_URI:
-    logger.error("❌ Neither DATABASE_URL (NeonDB) nor MONGO_DB_URI (MongoDB) is set!")
+if not MONGO_DB_URI:
+    logger.error("❌ MONGO_DB_URI is not set! MongoDB is required.")
     sys.exit(1)
 if not ADMIN_ID and not OWNER_ID:
     logger.error("❌ Neither ADMIN_ID nor OWNER_ID is set!")
