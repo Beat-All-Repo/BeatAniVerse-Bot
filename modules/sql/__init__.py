@@ -15,7 +15,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import scoped_session, sessionmaker
 from sqlalchemy import MetaData
 
-_DB_URI = os.getenv("DATABASE_URL", "")
+_DB_URI = ""   # PostgreSQL/NeonDB removed — MongoDB only
 _MONGO_URI = os.getenv("MONGO_DB_URI", "")
 
 import logging as _log
